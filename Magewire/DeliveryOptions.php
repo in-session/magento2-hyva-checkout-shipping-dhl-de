@@ -3,155 +3,366 @@ declare(strict_types=1);
 
 namespace Hyva\ShippingDhlDe\Magewire;
 
+use Dhl\Paket\Model\Config\ModuleConfig;
 use Dhl\Paket\Model\ShippingSettings\ShippingOption\Codes as DhlCodes;
+use Hyva\ShippingDhlDe\Model\Checkout\DhlCheckoutOptionValidator;
+use Hyva\ShippingDhlDe\Model\Checkout\DhlOptionAvailabilityResolver;
+use Hyva\ShippingDhlDe\Model\Checkout\DhlOptionSelectionCleaner;
+use Hyva\ShippingDhlDe\Model\Checkout\DhlOptionSelectionManager;
+use Hyva\ShippingDhlDe\Model\Checkout\DhlShippingContextResolver;
+use Magento\Checkout\Model\Session as CheckoutSession;
+use Magento\Framework\App\Config\ScopeConfigInterface;
+use Magento\Store\Model\StoreManagerInterface;
+use Netresearch\ShippingCore\Api\Data\ShippingSettings\ShippingOptionInterface;
 use Netresearch\ShippingCore\Model\ShippingSettings\ShippingOption\Codes as CoreCodes;
+use Netresearch\ShippingCore\Model\ShippingSettings\ShippingOption\Selection\QuoteSelectionManager;
+use Netresearch\ShippingCore\Model\ShippingSettings\ShippingOption\Selection\QuoteSelectionRepository;
 
 /**
- * Central Magewire component managing DHL delivery options.
- *
- * Acts as a "State Announcer": It manages which single exclusive service is currently active
- * and announces changes to all child components. It does not store or control the state of its children.
+ * Central Magewire component managing DHL delivery options and vendor-derived UI state rules.
  */
 class DeliveryOptions extends ShippingOptions
 {
-    /**
-     * Indicates if the shipping address is within Germany.
-     *
-     * @var bool
-     */
+    /** @var bool Whether the shipping address is domestic German (DE) for DHL add-ons. */
     public bool $isShippingAddressValid = false;
-    
-    protected array $services = [
-        'preferredDay'        => DhlCodes::SERVICE_OPTION_PREFERRED_DAY,
-        'preferredLocation'   => DhlCodes::SERVICE_OPTION_DROPOFF_DELIVERY,
-        'preferredNeighbor'   => DhlCodes::SERVICE_OPTION_NEIGHBOR_DELIVERY,
-        'noNeighbor'          => DhlCodes::SERVICE_OPTION_NO_NEIGHBOR_DELIVERY,
-        'parcelPackstation'   => CoreCodes::SERVICE_OPTION_DELIVERY_LOCATION,
-    ];
+
+    /** @var array List of currently active service codes */
+    public array $activeServiceCodes = [];
+
+    /** @var array List of current validation errors */
+    public array $validationErrors = [];
+
+    /** @var array Current shipping address data for child components */
+    public array $shippingAddress = [];
+
+    /** @var DhlCheckoutOptionValidator */
+    private DhlCheckoutOptionValidator $dhlCheckoutOptionValidator;
 
     /**
-     * The name of the currently active exclusive service.
-     *
-     * @var string|null
+     * Dependency injection for the delivery options parent component.
      */
-    public ?string $activeService = null;
+    public function __construct(
+        ModuleConfig $moduleConfig,
+        StoreManagerInterface $storeManager,
+        QuoteSelectionManager $quoteSelectionManager,
+        ShippingOptionInterface $shippingOption,
+        CheckoutSession $checkoutSession,
+        ScopeConfigInterface $scopeConfig,
+        QuoteSelectionRepository $quoteSelectionRepository,
+        DhlShippingContextResolver $dhlShippingContextResolver,
+        DhlOptionSelectionManager $dhlOptionSelectionManager,
+        DhlOptionAvailabilityResolver $dhlOptionAvailabilityResolver,
+        DhlOptionSelectionCleaner $dhlOptionSelectionCleaner,
+        DhlCheckoutOptionValidator $dhlCheckoutOptionValidator
+    ) {
+        parent::__construct(
+            $moduleConfig,
+            $storeManager,
+            $quoteSelectionManager,
+            $shippingOption,
+            $checkoutSession,
+            $scopeConfig,
+            $quoteSelectionRepository,
+            $dhlShippingContextResolver,
+            $dhlOptionSelectionManager,
+            $dhlOptionAvailabilityResolver,
+            $dhlOptionSelectionCleaner
+        );
+
+        $this->dhlCheckoutOptionValidator = $dhlCheckoutOptionValidator;
+    }
+
+    /** @var array Magewire event listeners */
+    protected $listeners = [ 'shipping_address_saved' => 'refreshState', 'guest_shipping_address_saved' => 'refreshState', 'shipping_method_selected' => 'refreshState', 'refresh' => 'refreshState', 'refreshState' => 'refreshState', 'requestExclusive' => 'grantExclusiveAccess', 'releaseExclusive' => 'releaseExclusiveAccess', 'requestStateBroadcast' => 'broadcastStateChange', ];
 
     /**
-     * Event listeners for checkout and child component events.
-     *
-     * @var array<string, string>
-     */
-    protected $listeners = [
-        'shipping_address_saved'       => 'checkCountryValidity',
-        'guest_shipping_address_saved' => 'checkCountryValidity',
-        'requestExclusive'             => 'grantExclusiveAccess',
-        'releaseExclusive'             => 'releaseExclusiveAccess',
-    ];
-
-    /**
-     * Component mount lifecycle method.
-     * Checks address validity and determines the initial active service.
+     * Magewire lifecycle hook.
+     * Initializes the delivery options state.
      *
      * @return void
      */
     public function mount(): void
     {
-        $this->checkCountryValidity();
-        $this->activeService = $this->detectActiveExclusiveService();
-
-        // Announce the initial state to all listening child components.
-        $this->emit('activeServiceChanged', $this->activeService);
-    }
-
-    /**
-     * Grants exclusive access to a child component and notifies listeners.
-     *
-     * @param string $serviceName The name of the service requesting exclusivity.
-     * @return void
-     */
-    public function grantExclusiveAccess(string $serviceName): void
-    {
-        if ($this->activeService === $serviceName) {
-            return; // No change needed.
+        $this->refreshState();
+        
+        if (!empty($this->fetchActiveServiceCodes())) {
+            $this->broadcastStateChange();
         }
-        $this->activeService = $serviceName;
-        $this->emit('activeServiceChanged', $this->activeService);
     }
 
     /**
-     * Releases exclusive access for a service and notifies listeners.
-     *
-     * @param string $serviceName The name of the service releasing exclusivity.
-     * @return void
-     */
-    public function releaseExclusiveAccess(string $serviceName): void
-    {
-        if ($this->activeService !== null) {
-            $this->activeService = null;
-            $this->emit('activeServiceChanged', null);
-        }
-        $this->activeService = null;
-        $this->emit('activeServiceChanged', null);
-    }
-
-    /**
-     * Checks if the current shipping address country is Germany ("DE").
+     * Refreshes the state of delivery options and broadcasts changes.
      *
      * @return void
      */
-    public function checkCountryValidity(): void
+    public function refreshState(): void
     {
+        $this->shippingAddress = [];
         try {
-            /** @var \Magento\Quote\Model\Quote\Address|null $shippingAddress */
-            $shippingAddress = $this->checkoutSession->getQuote()->getShippingAddress();
-            $this->isShippingAddressValid = ($shippingAddress && $shippingAddress->getCountryId() === 'DE');
-        } catch (\Exception $e) {
-            $this->isShippingAddressValid = false;
+            $address = $this->checkoutSession->getQuote()->getShippingAddress();
+            if ($address) {
+                $this->shippingAddress = [
+                    'street'      => $address->getStreetLine(1),
+                    'city'        => $address->getCity(),
+                    'postalCode'  => $address->getPostcode(),
+                    'countryCode' => $address->getCountryId(),
+                ];
+            }
+        } catch (\Exception $e) {}
+        
+        $context = $this->dhlShippingContextResolver->resolve();
+        $this->isShippingAddressValid = $context->isDomesticGermany();
+
+        $this->dhlOptionSelectionCleaner->cleanForContext($context);
+
+        if (!$context->isDhlPaket()) {
+            $this->activeServiceCodes = [];
+            $this->broadcastStateChange();
+            $this->validationErrors = [];
+            return;
         }
+
+        $this->activeServiceCodes = $this->fetchActiveServiceCodes();
+        $this->broadcastStateChange();
+        $this->validationErrors = $this->validate();
     }
 
     /**
-     * Detects which exclusive service is currently active based on saved quote data.
-     * Only called during initial component mount.
+     * Returns the currently available DHL service component aliases and option codes.
      *
-     * @return string|null The key of the active service, or null if none is active.
+     * @return array<string, string>
      */
-    private function detectActiveExclusiveService(): ?string
+    public function getServiceMap(): array
     {
-        foreach ($this->services as $serviceKey => $optionCode) {
-            $selections = $this->loadFromDb($optionCode);
+        return $this->dhlOptionAvailabilityResolver->getAvailableServiceMap(
+            $this->dhlShippingContextResolver->resolve()
+        );
+    }
 
-            switch ($serviceKey) {
-                case 'preferredDay':
-                    if (!empty($selections['date']?->getInputValue())) {
-                        return $serviceKey;
-                    }
-                    break;
-                case 'preferredLocation':
-                    if (!empty($selections['details']?->getInputValue())) {
-                        return $serviceKey;
-                    }
-                    break;
-                case 'preferredNeighbor':
-                    if (
-                        !empty($selections['name']?->getInputValue()) ||
-                        !empty($selections['address']?->getInputValue())
-                    ) {
-                        return $serviceKey;
-                    }
-                    break;
-                case 'noNeighbor':
-                    if (!empty($selections['enabled']?->getInputValue())) {
-                        return $serviceKey;
-                    }
-                    break;
-                case 'parcelPackstation':
-                    if (!empty($selections['id']?->getInputValue())) {
-                        return $serviceKey;
-                    }
-                    break;
+    /**
+     * Returns a list of mutually exclusive (blocking) service codes.
+     *
+     * @return array
+     */
+    private function getExclusiveCodes(): array
+    {
+        return [
+            CoreCodes::SERVICE_OPTION_DELIVERY_LOCATION,
+            DhlCodes::SERVICE_OPTION_PREFERRED_DAY,
+            DhlCodes::SERVICE_OPTION_DROPOFF_DELIVERY,
+            DhlCodes::SERVICE_OPTION_NEIGHBOR_DELIVERY,
+            DhlCodes::SERVICE_OPTION_NO_NEIGHBOR_DELIVERY,
+            DhlCodes::SERVICE_OPTION_DELIVERY_TYPE,
+        ];
+    }
+
+    /**
+     * Returns compatibility/UI rules for managed DHL options.
+     *
+     * @return array<string, array<string, string[]>>
+     */
+    private function getRulesMap(): array
+    {
+        return $this->dhlOptionAvailabilityResolver->getRulesMap();
+    }
+
+    /**
+     * Validates delivery options based on compatibility rules.
+     *
+     * @return array
+     */
+    public function validate(): array
+    {
+        return $this->dhlCheckoutOptionValidator
+            ->validate($this->dhlShippingContextResolver->resolve())
+            ->getErrors();
+    }
+
+    /**
+     * Returns all currently active service codes for the current quote.
+     *
+     * @return array
+     */
+    private function fetchActiveServiceCodes(): array
+    {
+        $activeCodes = [];
+        $addressId = $this->getAddressId();
+        if ($addressId === null) {
+            return [];
+        }
+        $selections = $this->quoteSelectionManager->load($addressId);
+
+        foreach ($this->getExclusiveCodes() as $code) {
+            $fieldSelections = [];
+            foreach ($selections as $sel) {
+                if ($sel->getShippingOptionCode() === $code) {
+                    $fieldSelections[$sel->getInputCode()] = $sel;
+                }
+            }
+
+            if ($code === CoreCodes::SERVICE_OPTION_DELIVERY_LOCATION) {
+                $enabled = !empty($fieldSelections['enabled'])
+                    && (bool) $fieldSelections['enabled']->getInputValue();
+                $hasId  = !empty($fieldSelections['id'])
+                    && trim((string)$fieldSelections['id']->getInputValue()) !== '';
+                if ($enabled && $hasId) {
+                    $activeCodes[] = $code;
+                    continue;
+                }
+            } elseif ($code === DhlCodes::SERVICE_OPTION_NEIGHBOR_DELIVERY) {
+                $hasName = !empty($fieldSelections['name']) && trim((string)$fieldSelections['name']->getInputValue()) !== '';
+                $hasAddr = !empty($fieldSelections['address']) && trim((string)$fieldSelections['address']->getInputValue()) !== '';
+                if ($hasName && $hasAddr) { $activeCodes[] = $code; continue; }
+            } elseif (
+                $code === DhlCodes::SERVICE_OPTION_DROPOFF_DELIVERY
+                || $code === DhlCodes::SERVICE_OPTION_DELIVERY_TYPE
+            ) {
+                if (!empty($fieldSelections['details']) && trim((string)$fieldSelections['details']->getInputValue()) !== '') {
+                    $activeCodes[] = $code; continue;
+                }
+            } else {
+                if ($this->selectionsHaveValue($fieldSelections)) { $activeCodes[] = $code; }
             }
         }
-        return null;
+        return array_values(array_unique($activeCodes));
     }
+
+    /**
+     * Activates exclusive access for a service code and broadcasts changes.
+     *
+     * @param string|array|null $serviceCode
+     * @return void
+     */
+    public function grantExclusiveAccess(string|array|null $serviceCode): void
+    {
+        $serviceCode = $this->normalizeServiceCode($serviceCode);
+        if ($serviceCode === null || !in_array($serviceCode, $this->getExclusiveCodes(), true)) {
+            return;
+        }
+        if (!in_array($serviceCode, $this->activeServiceCodes, true)) {
+            $this->activeServiceCodes[] = $serviceCode;
+            $this->activeServiceCodes = $this->normalizeActiveCodes($this->activeServiceCodes);
+            $this->broadcastStateChange();
+        }
+    }
+
+    /**
+     * Releases exclusive access for a service code and broadcasts changes.
+     *
+     * @param string|array|null $serviceCode
+     * @return void
+     */
+    public function releaseExclusiveAccess(string|array|null $serviceCode): void
+    {
+        $serviceCode = $this->normalizeServiceCode($serviceCode);
+        if ($serviceCode === null || !in_array($serviceCode, $this->getExclusiveCodes(), true)) {
+            return;
+        }
+        $this->activeServiceCodes = array_filter(
+            $this->activeServiceCodes,
+            fn($code) => $code !== $serviceCode
+        );
+        $this->activeServiceCodes = $this->normalizeActiveCodes($this->activeServiceCodes);
+        $this->broadcastStateChange();
+    }
+
+    /**
+     * Normalizes a Magewire service-code event payload.
+     *
+     * @param string|array|null $serviceCode
+     * @return string|null
+     */
+    private function normalizeServiceCode(string|array|null $serviceCode): ?string
+    {
+        if (is_array($serviceCode)) {
+            $serviceCode = reset($serviceCode) ?: null;
+        }
+
+        $serviceCode = is_string($serviceCode) ? trim($serviceCode) : '';
+
+        return $serviceCode !== '' ? $serviceCode : null;
+    }
+
+    /**
+     * Normalizes the list of active codes by applying compatibility rules.
+     *
+     * @param array $codes
+     * @return array
+     */
+    private function normalizeActiveCodes(array $codes): array
+    {
+        $rulesMap = $this->getRulesMap();
+        $normalized = [];
+        foreach ($codes as $candidate) {
+            foreach ($normalized as $idx => $already) {
+                $rule = $rulesMap[$candidate] ?? [];
+                if (in_array($already, $rule['disable'] ?? [], true)) {
+                    unset($normalized[$idx]);
+                }
+            }
+            $blocked = false;
+            foreach ($normalized as $already) {
+                $rule = $rulesMap[$already] ?? [];
+                if (in_array($candidate, $rule['disable'] ?? [], true)) {
+                    $blocked = true;
+                    break;
+                }
+            }
+            if (!$blocked) {
+                $normalized[] = $candidate;
+            }
+        }
+        return array_values($normalized);
+    }
+
+    /**
+     * Broadcasts the current state to child components.
+     *
+     * @return void
+     */
+    public function broadcastStateChange(): void
+    {
+        $context = $this->dhlShippingContextResolver->resolve();
+        $availableServiceMap = $this->dhlOptionAvailabilityResolver->getAvailableServiceMap($context);
+        $serviceMap = $this->dhlOptionAvailabilityResolver->getStateBroadcastServiceMap($context);
+
+        $rulesMap    = $this->getRulesMap();
+        $activeCodes = $this->activeServiceCodes;
+        $parcelPackstationComponent = $this->dhlOptionAvailabilityResolver->getComponentAlias(
+            CoreCodes::SERVICE_OPTION_DELIVERY_LOCATION
+        );
+
+        $hideSet = [];
+        $disableSet = [];
+        foreach ($activeCodes as $active) {
+            $rule = $rulesMap[$active] ?? [];
+            foreach (($rule['hide'] ?? []) as $c)    { $hideSet[$c]    = true; }
+            foreach (($rule['disable'] ?? []) as $c) { $disableSet[$c] = true; }
+        }
+
+        foreach ($serviceMap as $componentName => $componentCode) {
+            if (in_array($componentCode, $activeCodes, true)) {
+                $isHidden = false;
+                $isDisabled = false;
+            } else {
+                $isHidden   = !empty($hideSet[$componentCode]);
+                $isDisabled = !empty($disableSet[$componentCode]);
+            }
+            if ($componentCode === DhlCodes::SERVICE_OPTION_GOGREEN_PLUS && !$this->isShippingAddressValid) {
+                $isHidden = true;
+            }
+
+            if (!in_array($componentCode, $availableServiceMap, true)) {
+                $isHidden = true;
+                $isDisabled = true;
+            }
+
+            if ($componentName === $parcelPackstationComponent) {
+                $this->emitTo($componentName, 'updateState', $activeCodes, $isDisabled, $isHidden, $this->shippingAddress);
+            } else {
+                $this->emitTo($componentName, 'updateState', $activeCodes, $isDisabled, $isHidden);
+            }
+        }
+    }
+
 }

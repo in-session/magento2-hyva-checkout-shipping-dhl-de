@@ -17,7 +17,7 @@ $descriptionId = 'parcel-announcement-desc';
 $descriptionText = __('Your e-mail address will be sent to DHL upon enabling, after which DHL will trigger a package announcement for your shipment. The e-mail address will exclusively be used for the announcement of this shipment.');
 ?>
 
-<fieldset class="p-4 bg-white rounded-lg mt-0">
+<fieldset class="p-4 bg-white rounded-lg mt-0<?= $magewire->hidden ? ' hidden' : '' ?>">
     <div class="flex items-start mb-2" id="<?= $escaper->escapeHtmlAttr($descriptionId) ?>">
         <legend class="text-slate-800 text-base font-medium mb-0">
             <?= $escaper->escapeHtml(__('Parcel Announcement')) ?>
@@ -27,12 +27,15 @@ $descriptionText = __('Your e-mail address will be sent to DHL upon enabling, af
 
     <label class="inline-flex items-start gap-x-4"
            for="parcelAnnouncement">
-        <input id="parcelAnnouncement"
-               class="form-checkbox flex-none"
-               type="checkbox"
-               wire:model="parcelAnnouncement"
-               aria-describedby="<?= $escaper->escapeHtmlAttr($descriptionId) ?>"
-        />
+		<input id="parcelAnnouncement"
+			   class="form-checkbox flex-none"
+			   type="checkbox"
+			   value="1"
+			   wire:click="toggleParcelAnnouncement"
+			   <?= (bool) $magewire->parcelAnnouncement ? 'checked' : '' ?>
+			   <?= $magewire->disabled ? 'disabled' : '' ?>
+			   aria-describedby="<?= $escaper->escapeHtmlAttr($descriptionId) ?>"
+		/>
         <span class="text-gray-700 hover:cursor-pointer">
             <?= $escaper->escapeHtml(__('Enable DHL parcel notification')) ?>
         </span>

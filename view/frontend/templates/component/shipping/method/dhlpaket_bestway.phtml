@@ -4,42 +4,49 @@ declare(strict_types=1);
 use Magento\Framework\Escaper;
 use Magento\Framework\View\Element\Template;
 use Hyva\ShippingDhlDe\Magewire\DeliveryOptions;
+use Netresearch\ShippingCore\Model\ShippingSettings\ShippingOption\Codes as CoreCodes;
 
 /** @var Escaper $escaper */
 /** @var Template $block */
 /** @var DeliveryOptions $magewire */
 
-$as = $magewire->activeService;
+$activeServiceCodes = $magewire->activeServiceCodes;
 ?>
 <fieldset class="nrshipping-settings-container p-4 border border-solid mt-6 flex flex-col gap-y-1"
-     @shipping-country_id.window="Magewire.emitTo('checkout.shipping.method.dhlpaket_bestway', 'refresh')">
-    
+          @shipping-country_id.window="Magewire.emitTo('checkout.shipping.method.dhlpaket_bestway', 'refreshState')">
     <legend class="text-base font-semibold">
         <?= $escaper->escapeHtml(__('DHL Preferred Delivery. Delivered just the way you want.')) ?>
     </legend>
-
     <p><?= $escaper->escapeHtml(__('You decide when and where you want to receive your parcels with the recipient services of DHL.')) ?></p>
     <p><?= $escaper->escapeHtml(__('Please choose your preferred delivery options.')) ?></p>
 
     <div class="flex flex-col gap-y-4 mt-4">
 
-        <?= /* @noEscape */ $block->getChildHtml('dhlpaket_bestway_parcel_announcement'); ?>
+        <?= /* @noEscape */ $block->getChildHtml('checkout.shipping.method.dhlpaket_bestway_parcel_announcement'); ?>
 
-        <?php if ($magewire->isShippingAddressValid): ?>
-            <?php if ($as === null || $as === 'parcelPackstation'): ?>
-                <?= /* @noEscape */ $block->getChildHtml('dhlpaket_bestway_parcel_packstation'); ?>
+        <?php if ($magewire->isShippingAddressValid): ?>       
+            <?php
+            // Helper functions
+            $isActive = function($code) use ($activeServiceCodes) {
+                return in_array($code, $activeServiceCodes, true);
+            };
+            $noneActive = empty($activeServiceCodes);
+            ?>
+
+            <?php if ($noneActive || $isActive(CoreCodes::SERVICE_OPTION_DELIVERY_LOCATION)): ?>
+                <?= /* @noEscape */ $block->getChildHtml('checkout.shipping.method.dhlpaket_bestway_parcel_packstation'); ?>
             <?php endif; ?>
 
-            <?php if ($as === null || $as !== 'parcelPackstation'): ?>
-                <?php /*?>todo<?php */?>
-                <?//= /* @noEscape */ $block->getChildHtml('dhlpaket_bestway_preferred_day'); ?>
-
-                <?= /* @noEscape */ $block->getChildHtml('dhlpaket_preferred_location'); ?>
-                <?= /* @noEscape */ $block->getChildHtml('dhlpaket_preferred_neighbor'); ?>
-                <?= /* @noEscape */ $block->getChildHtml('dhlpaket_no_neighbor'); ?>
+            <?php if ($noneActive || !$isActive(CoreCodes::SERVICE_OPTION_DELIVERY_LOCATION)): ?>
+                <?= /* @noEscape */ $block->getChildHtml('checkout.shipping.method.dhlpaket_bestway_preferred_day'); ?>
+                <?= /* @noEscape */ $block->getChildHtml('checkout.shipping.method.dhlpaket_bestway_preferred_location'); ?>
+                <?= /* @noEscape */ $block->getChildHtml('checkout.shipping.method.dhlpaket_bestway_preferred_neighbor'); ?>
+                <?= /* @noEscape */ $block->getChildHtml('checkout.shipping.method.dhlpaket_bestway_no_neighbor'); ?>
             <?php endif; ?>
 
-            <?= /* @noEscape */ $block->getChildHtml('dhlpaket_gogreen_plus'); ?>
+            <?= /* @noEscape */ $block->getChildHtml('checkout.shipping.method.gogreen_plus'); ?>
         <?php endif; ?>
+        
+        <?= /* @noEscape */ $block->getChildHtml('checkout.shipping.method.dhlpaket_bestway_delivery_type'); ?>
     </div>
 </fieldset>

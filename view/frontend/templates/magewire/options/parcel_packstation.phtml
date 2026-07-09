@@ -1,0 +1,28 @@
+<?php
+declare(strict_types=1);
+
+use Netresearch\ShippingCore\Model\ShippingSettings\ShippingOption\Codes as CoreCodes;
+use Hyva\ShippingDhlDe\ViewModel\Tooltip;
+
+/** @var \Hyva\ShippingDhlDe\Magewire\DeliveryOptions $magewire */
+$magewire = $block->getData('dhl_delivery_options');
+if (!$magewire instanceof \Hyva\ShippingDhlDe\Magewire\DeliveryOptions) {
+    return;
+}
+$viewModels = $block->getData('dhl_view_models') ?? ($viewModels ?? null);
+if (!$viewModels instanceof \Hyva\Theme\Model\ViewModelRegistry) {
+    return;
+}
+$escaper = $block->getData('dhl_escaper') ?? ($escaper ?? null);
+if (!$escaper instanceof \Magento\Framework\Escaper) {
+    return;
+}
+$tooltip = $viewModels->require(Tooltip::class);
+$code = CoreCodes::SERVICE_OPTION_DELIVERY_LOCATION;
+if ($magewire->isOptionHidden($code)) { return; }
+$disabled = $magewire->isOptionDisabled($code);
+$postnumberInputId = 'dhl-postnumber';
+$postnumberErrorId = 'dhl-postnumber-error';
+$postnumberDescriptionId = 'dhl-postnumber-description';
+?>
+<fieldset class="p-4 bg-white rounded-lg mt-0"><div class="flex flex-row items-start"><legend class="text-slate-800 text-base font-medium mb-0"><?= $escaper->escapeHtml(__('Deliver to a DHL parcel station, parcel shop or postal outlet')) ?></legend><?= /* @noEscape */ $tooltip->render(__('Adjust your parcel delivery flexibly to your schedule. Receive your packages while on the go at one of over 28,000 pickup locations in Germany - at a DHL parcel station or post office. Wherever it best suits your needs.')) ?></div><?php if (empty($magewire->shippingAddress)): ?><p class="message warning p-4 bg-gray-100 rounded-lg mt-2"><?= $escaper->escapeHtml(__('Please provide your delivery address before selecting a pickup point.')) ?></p><?php else: ?><div><?php if (empty($magewire->deliveryLocation['id'])): ?><div class="messages pt-2"><button class="w-auto btn btn-secondary" type="button" wire:click="openModal" aria-haspopup="dialog" <?= $disabled ? 'disabled' : '' ?>><span><?= $escaper->escapeHtml(__('Find DHL Pickup Location')) ?></span></button></div><?php endif; ?><?php if ($magewire->modalOpened): ?><div class="fixed inset-0 flex items-center justify-center text-left bg-black bg-opacity-50 z-30"><div role="dialog" aria-labelledby="the-label" class="inline-block max-h-screen bg-white shadow-xl rounded-lg p-10 text-gray-700"><?php include $block->getTemplateFile('Hyva_ShippingDhlDe::magewire/parcel_packstation_modal.phtml'); ?></div></div><?php endif; ?><div class="flex flex-row items-start gap-x-3"><div class="flex-grow"><?php if (!empty($magewire->deliveryLocation['displayName'])): ?><p class="font-semibold"><?= $escaper->escapeHtml($magewire->deliveryLocation['displayName']); ?></p><?php endif; ?><?php if (!empty($magewire->deliveryLocation['company'])): ?><p><?= $escaper->escapeHtml($magewire->deliveryLocation['company']); ?></p><?php endif; ?><?php if (!empty($magewire->deliveryLocation['street'])): ?><p><?= $escaper->escapeHtml($magewire->deliveryLocation['street']); ?></p><?php endif; ?><p><?php if (!empty($magewire->deliveryLocation['postalCode'])): ?><span><?= $escaper->escapeHtml($magewire->deliveryLocation['postalCode']); ?></span><?php endif; ?><?php if (!empty($magewire->deliveryLocation['city'])): ?><span class="ml-1"><?= $escaper->escapeHtml($magewire->deliveryLocation['city']); ?></span><?php endif; ?></p><?php if (!empty($magewire->deliveryLocation['enabled'])): ?><button class="w-auto btn btn-secondary mt-2" type="button" wire:click="clearPackstation"><span><?= $escaper->escapeHtml(__('Remove')) ?></span></button><div class="field-wrapper field-type-text field field-reserved my-3 flex flex-col items-start justify-start <?= !empty($magewire->postnumberError) ? ' field-error' : '' ?>"><div class="inline-flex items-center"><label class="label font-bold mr-3" for="<?= $escaper->escapeHtmlAttr($postnumberInputId) ?>"><?= $escaper->escapeHtml(__('DHL Post Number')) ?></label><?= $tooltip->render(__('The post number is your personal identification code that you receive with your registration at DHL.')) ?></div><?php $describedBy = [$postnumberDescriptionId]; if (!empty($magewire->postnumberError)) { $describedBy[] = $postnumberErrorId; } ?><input type="text" id="<?= $escaper->escapeHtmlAttr($postnumberInputId) ?>" name="dhl_postnumber" autocomplete="off" maxlength="10" inputmode="numeric" pattern="\d{6,10}" <?= (($magewire->deliveryLocation['type'] ?? '') === 'locker') ? 'required' : '' ?> class="block w-full form-input grow renderer-text" placeholder="<?= $escaper->escapeHtmlAttr(__('Your personal post number')) ?>" wire:model.lazy="deliveryLocation.customerPostnumber" aria-describedby="<?= $escaper->escapeHtmlAttr(implode(' ', $describedBy)) ?>" <?= !empty($magewire->postnumberError) ? 'aria-invalid="true"' : '' ?>><?php if (!empty($magewire->postnumberError)): ?><p class="messages" id="<?= $escaper->escapeHtmlAttr($postnumberErrorId) ?>" aria-live="polite"><?= $escaper->escapeHtml($magewire->postnumberError) ?></p><?php endif; ?></div><p class="text-xs mt-3" id="<?= $escaper->escapeHtmlAttr($postnumberDescriptionId) ?>"><?= $escaper->escapeHtml(__('You must enter your DHL post number when sending it to a DHL parcel station. For DHL postal outlet or parcel shop delivery, the DHL post number is optional.')) ?></p><?php endif; ?></div></div></div><?php endif; ?></fieldset>

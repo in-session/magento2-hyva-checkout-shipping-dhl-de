@@ -8,61 +8,101 @@ use Dhl\Paket\Model\ShippingSettings\ShippingOption\Codes as DhlCodes;
 use Netresearch\ShippingCore\Api\Data\ShippingSettings\ShippingOption\Selection\SelectionInterface;
 
 /**
- * Magewire component for managing DHL GoGreen Plus option.
- *
- * Handles the enabling, fee calculation, and state persistence for the GoGreen Plus shipping service.
+ * Magewire component for managing the DHL GoGreen Plus option.
  */
 class GoGreenPlus extends ShippingOptions
 {
-    /**
-     * Indicates if GoGreen Plus is enabled.
-     *
-     * @var bool
-     */
-    public bool $goGreenPlusEnabled = false;
+    public const SERVICE_CODE = DhlCodes::SERVICE_OPTION_GOGREEN_PLUS;
 
-    /**
-     * The additional fee for GoGreen Plus service.
-     *
-     * @var float
-     */
+    /** @var bool|null Whether GoGreen Plus is enabled */
+    public ?bool $goGreenPlusEnabled = false;
+
+    /** @var float Additional fee for GoGreen Plus */
     public float $fee = 0.0;
 
-    /**
-     * Indicates if the option is disabled (e.g. due to configuration or address).
-     *
-     * @var bool
-     */
+    /** @var bool Whether the option is disabled */
     public bool $disabled = false;
 
+    /** @var bool Whether the option is hidden */
+    public bool $hidden = false;
+
+    /** @var array Magewire event listeners */
+    protected $listeners = [
+        'updateState' => 'onUpdateState',
+    ];
+
     /**
-     * Lifecycle method called on component mount.
-     * Loads current selection and fetches the configured fee.
+     * Magewire lifecycle hook.
+     * Loads selection from the database and initializes the component.
      *
      * @return void
      */
     public function mount(): void
     {
         /** @var SelectionInterface[] $quoteSelections */
-        $quoteSelections = $this->loadFromDb(DhlCodes::SERVICE_OPTION_GOGREEN_PLUS);
+        $quoteSelections = $this->loadFromDb(self::SERVICE_CODE);
 
         if ($quoteSelections && isset($quoteSelections['enabled'])) {
             $this->goGreenPlusEnabled = (bool) $quoteSelections['enabled']->getInputValue();
         }
 
         $this->fee = (float) $this->scopeConfig->getValue(ModuleConfig::CONFIG_PATH_GOGREEN_PLUS_CHARGE);
+        $this->emitUp('requestStateBroadcast');
     }
 
     /**
-     * Handler called when the GoGreen Plus state is updated.
-     * Triggers a refresh of the price summary and persists the change.
+     * Handles state updates from the parent component (DeliveryOptions).
+     * Reacts to changes in disabled/hidden state.
      *
-     * @param bool $value The new enabled/disabled state.
-     * @return mixed Result of field persistence operation.
+     * @param mixed ...$args
+     * @return void
      */
-    public function updatedGoGreenPlusEnabled(bool $value): mixed
+    public function onUpdateState(...$args): void
     {
-        $this->emitToRefresh('price-summary.total-segments');
-        return $this->persistFieldUpdate('enabled', $value, DhlCodes::SERVICE_OPTION_GOGREEN_PLUS);
+        // Handles both array-based and variadic Magewire event arguments.
+        if (isset($args[0]) && is_array($args[0])) {
+            $args = $args[0];
+        }
+        $activeService = $args[0] ?? null;
+        $isDisabled = (bool)($args[1] ?? false);
+        $isHidden = (bool)($args[2] ?? false);
+
+        if (($isHidden || $isDisabled) && $this->goGreenPlusEnabled) {
+            $this->clearValue();
+        }
+
+        $this->disabled = $isDisabled;
+        $this->hidden   = $isHidden;
     }
+
+    /**
+     * Clears the selected GoGreen Plus value from the quote.
+     *
+     * @return void
+     */
+    public function clearValue(): void
+    {
+        $this->goGreenPlusEnabled = false;
+        $this->persistFieldUpdate('enabled', false, self::SERVICE_CODE);
+        $this->emitToRefresh('price-summary.total-segments');
+    }
+
+    /**
+     * Handles when GoGreen Plus is enabled or disabled.
+     *
+     * @param bool|null $value
+     * @return mixed
+     */
+    public function updatedGoGreenPlusEnabled(?bool $value): mixed 
+	{ 
+		$this->goGreenPlusEnabled = (bool) $value; 		
+		$this->emitToRefresh('price-summary.total-segments'); 
+		
+		return $this->persistFieldUpdate('enabled', $this->goGreenPlusEnabled, self::SERVICE_CODE); 
+	}
+	
+	public function toggleGoGreenPlus(): mixed
+	{
+		return $this->updatedGoGreenPlusEnabled(!(bool) $this->goGreenPlusEnabled);
+	}
 }

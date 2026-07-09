@@ -21,7 +21,7 @@ $feenote = str_replace('$1', $formatterViewModel->currency($magewire->fee), $fee
 $feeNoteId = 'gogreen-plus-fee-note'; // Eindeutige ID für die Verknüpfung
 ?>
 
-<fieldset class="p-4 bg-white rounded-lg mt-0">
+<fieldset class="p-4 bg-white rounded-lg mt-0<?= $magewire->hidden ? ' hidden' : '' ?>">
     <div class="flex items-start mb-2">
         <legend class="text-slate-800 text-base font-medium mb-0">
             <?= $escaper->escapeHtml(__('GoGreen Plus: Climate Neutral Shipping')) ?>
@@ -34,7 +34,9 @@ $feeNoteId = 'gogreen-plus-fee-note'; // Eindeutige ID für die Verknüpfung
         <input id="gogreen_plus_enabled"
                class="form-checkbox flex-none"
                type="checkbox"
-               wire:model="goGreenPlusEnabled"
+               wire:click="toggleGoGreenPlus"
+			   <?= (bool) $magewire->goGreenPlusEnabled ? 'checked' : '' ?>
+               <?= $magewire->disabled ? 'disabled' : '' ?>
                <?php if ($magewire->fee > 0): ?>
                    aria-describedby="<?= $escaper->escapeHtmlAttr($feeNoteId) ?>"
                <?php endif; ?>
@@ -45,9 +47,8 @@ $feeNoteId = 'gogreen-plus-fee-note'; // Eindeutige ID für die Verknüpfung
     </label>
     
     <?php if ($magewire->fee > 0): ?>
-        <p class="form-hint-text mt-2 text-sm text-slate-500 w-full" id="<?= $escaper->escapeHtmlAttr($feeNoteId) ?>">
+        <p class="text-sm" id="<?= $escaper->escapeHtmlAttr($feeNoteId) ?>">
             <?= $escaper->escapeHtml($feenote); ?>
         </p>
     <?php endif; ?>
-
 </fieldset>

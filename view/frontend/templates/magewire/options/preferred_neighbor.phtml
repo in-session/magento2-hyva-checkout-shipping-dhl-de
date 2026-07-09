@@ -1,0 +1,26 @@
+<?php
+declare(strict_types=1);
+
+use Dhl\Paket\Model\ShippingSettings\ShippingOption\Codes as DhlCodes;
+use Hyva\ShippingDhlDe\ViewModel\Tooltip;
+
+/** @var \Hyva\ShippingDhlDe\Magewire\DeliveryOptions $magewire */
+$magewire = $block->getData('dhl_delivery_options');
+if (!$magewire instanceof \Hyva\ShippingDhlDe\Magewire\DeliveryOptions) {
+    return;
+}
+$viewModels = $block->getData('dhl_view_models') ?? ($viewModels ?? null);
+if (!$viewModels instanceof \Hyva\Theme\Model\ViewModelRegistry) {
+    return;
+}
+$escaper = $block->getData('dhl_escaper') ?? ($escaper ?? null);
+if (!$escaper instanceof \Magento\Framework\Escaper) {
+    return;
+}
+$tooltip = $viewModels->require(Tooltip::class);
+$code = DhlCodes::SERVICE_OPTION_NEIGHBOR_DELIVERY;
+if ($magewire->isOptionHidden($code)) { return; }
+$disabled = $magewire->isOptionDisabled($code);
+$descriptionId = 'preferred-neighbor-desc';
+?>
+<fieldset class="p-4 bg-white rounded-lg mt-0"><div class="flex flex-row items-start" id="<?= $escaper->escapeHtmlAttr($descriptionId) ?>"><legend class="text-slate-800 text-base font-medium mb-0"><?= $escaper->escapeHtml(__('Preferred Neighbor: Delivery to a neighbor of your choice')) ?></legend><?= /* @noEscape */ $tooltip->render(__('Declare a person in your immediate neighborhood whom we can hand out your parcel. This person should live in the same building, directly opposite or next door.')) ?></div><div class="flex flex-col gap-y-4 mt-2"><div><label for="preferred_neighbor_name" class="label text-sm text-slate-700"><span><?= $escaper->escapeHtml(__('Neighbor name')) ?></span></label><input wire:model.lazy="preferredNeighborName" type="text" id="preferred_neighbor_name" class="block w-full form-input grow renderer-text<?= $disabled ? ' opacity-50 pointer-events-none' : '' ?>" <?= $disabled ? 'disabled' : '' ?> placeholder="<?= $escaper->escapeHtmlAttr(__('First name, last name of neighbor'))?>" /></div><div><label for="preferred_neighbor_address" class="label text-sm text-slate-700"><span><?= $escaper->escapeHtml(__('Neighbor address')) ?></span></label><input wire:model.lazy="preferredNeighborAddress" id="preferred_neighbor_address" class="block w-full form-input grow renderer-text<?= $disabled ? ' opacity-50 pointer-events-none' : '' ?>" type="text" <?= $disabled ? 'disabled' : '' ?> placeholder="<?= $escaper->escapeHtmlAttr(__('Street, number, postal code, city'))?>" /></div><?php if (trim((string)$magewire->preferredNeighborName) !== '' || trim((string)$magewire->preferredNeighborAddress) !== ''): ?><button type="button" class="btn btn-secondary" wire:click="resetPreferredNeighbor"><?= $escaper->escapeHtml(__('Remove preferred neighbor')) ?></button><?php endif; ?></div></fieldset>

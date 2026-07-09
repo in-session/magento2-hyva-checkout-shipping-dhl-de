@@ -17,23 +17,30 @@ $descriptionId = 'preferred-location-desc';
 $descriptionText = __('Choose a weather-protected and non-visible place on your property where we can deposit the parcel in your absence.');
 ?>
 
-<fieldset class="p-4 bg-white rounded-lg mt-0">
+<fieldset class="p-4 bg-white rounded-lg mt-0<?= $magewire->hidden ? ' hidden' : '' ?>">
     <div class="flex items-start gap-4 relative font-semibold mb-2" id="<?= $escaper->escapeHtmlAttr($descriptionId) ?>">
         <legend class="text-slate-800 text-base font-medium mb-0">
             <?= $escaper->escapeHtml(__('Drop-off Location: Delivery to your preferred drop-off location')) ?>
         </legend>
         <?= /* @noEscape */ $tooltip->render($descriptionText) ?>
     </div>
-
     <div>
         <input wire:model.lazy="preferredLocation"
                type="text"
                id="preferred_location"
                class="block w-full form-input grow renderer-text<?= $magewire->disabled ? ' opacity-50 pointer-events-none' : '' ?>"
                placeholder="<?= $escaper->escapeHtmlAttr(__('E.g. garage, terrace'))?>"
+               maxlength="<?= $escaper->escapeHtmlAttr((string) $magewire::MAX_LENGTH) ?>"
                <?= $magewire->disabled ? 'disabled' : '' ?>
                aria-label="<?= $escaper->escapeHtmlAttr(__('Your preferred drop-off location')) ?>"
                aria-describedby="<?= $escaper->escapeHtmlAttr($descriptionId) ?>"
         />
+        <?php if (trim((string) $magewire->preferredLocation) !== ''): ?>
+            <button type="button"
+                    class="btn btn-secondary mt-3"
+                    wire:click="clearValue">
+                <?= $escaper->escapeHtml(__('Remove drop-off location')) ?>
+            </button>
+        <?php endif; ?>
     </div>
 </fieldset>
