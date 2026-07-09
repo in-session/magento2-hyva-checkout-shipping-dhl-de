@@ -22,8 +22,8 @@ DHL Germany partner module for Magento
 - [X] Frontend Checkout:
     - [X] DHL Packstation, a parcel store or a post office branch (MapBox API token)
           RestApi: rest/de/V1/nrshipping/delivery-locations/dhlpaket/search
-    - [ ] Delivery Day
-    - [ ] Drop-off Delivery
+    - [X] Delivery Day
+    - [X] Drop-off Delivery
     - [X] Package announcement
     - [X] Preferred neighbor delivery
     - [X] No neighbor delivery
