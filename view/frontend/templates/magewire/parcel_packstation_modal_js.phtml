@@ -40,12 +40,20 @@ $heroicons = $viewModels->require(HeroiconsOutline::class);
             },
             showParcelShops: false,
             mapboxApiToken: '',
+            mapTileUrl: '',
+            mapAttribution: '',
+            locationSearchUrl: '',
             currentDetailIndex: null,
             selectedLocation: null,
             isLoading: false,
             loadfiles: false,
             initialAddress: {},
             locations: [],
+            finderErrorMessage: '',
+            finderNoticeMessage: '',
+            showMap: true,
+            popupDelegationBound: false,
+            mapInitScheduled: false,
             init() {
                 try {
                     const parsed = JSON.parse(this.$el.dataset.shippingAddress);
@@ -58,16 +66,35 @@ $heroicons = $viewModels->require(HeroiconsOutline::class);
                 } catch (e) {
                     console.warn('Invalid address JSON in data attribute', e);
                 }
-                this.mapboxApiToken = this.$el.dataset.mapboxToken;
-                this.fetchLocations();
+                this.mapboxApiToken = this.$el.dataset.mapboxToken || '';
+                this.mapTileUrl = this.$el.dataset.mapTileUrl || '';
+                this.mapAttribution = this.$el.dataset.mapAttribution || '';
+                this.locationSearchUrl = this.$el.dataset.locationSearchUrl || '';
 
                 if (!this.loadfiles) {
                     this.loadJsCss().then(() => {
-                        this.loadfiles = true;                          
-                        this.initMap();                            
-                        this.updateMarkers();   
+                        this.loadfiles = true;
+                        this.initMap();
+                        this.bindPopupEventDelegation();
+
+                        if (!this.mapTileUrl) {
+                            return;
+                        }
+
+                        this.afterMapVisible(() => {
+                            if (this.hasSearchableAddress()) {
+                                this.fetchLocations();
+                                return;
+                            }
+
+                            this.locations = [];
+                            this.updateMarkers();
+                            this.showFinderNotice(
+                                '<?= $escaper->escapeJs(__('Please enter a postal code and city to search for DHL pickup locations.')) ?>'
+                            );
+                        });
                     });
-                }                  
+                }
             },
             loadJsCss() {
                 return new Promise(resolve => {
@@ -85,12 +112,20 @@ $heroicons = $viewModels->require(HeroiconsOutline::class);
                     document.head.appendChild(script);
                 });
             },
-            fetchLocations(hasRetried = false) {
+            fetchLocations() {
+                if (!this.locationSearchUrl) {
+                    this.showFinderError(
+                        '<?= $escaper->escapeJs(__('DHL pickup locations could not be loaded.')) ?>'
+                    );
+                    console.warn('DHL location finder: missing location search URL.');
+                    return;
+                }
+
                 this.isLoading = true;
                 //this.initialAddress = JSON.parse(JSON.stringify(this.address)); 
                 this.initialAddress = { ...this.address };
 
-                fetch(`${BASE_URL}rest/de/V1/nrshipping/delivery-locations/dhlpaket/search`, {
+                fetch(this.locationSearchUrl, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
@@ -99,37 +134,90 @@ $heroicons = $viewModels->require(HeroiconsOutline::class);
                         searchAddress: this.address
                     })
                 })
-                .then(response => response.json())
-                .then(data => {
-                    if (data && data.length > 0) {
-                        this.locations = data;
-                        this.updateMarkers();
-                    } else {
-                        if (!hasRetried) {
-                            setTimeout(() => {
-                                console.log('Retrying fetch after 1 second...');
-                                this.fetchLocations(true);
-                            }, 500);
-                        }
+                .then(async response => {
+                    let payload = null;
+
+                    try {
+                        payload = await response.json();
+                    } catch (e) {
+                        payload = null;
                     }
-                    this.isLoading = false;
+
+                    if (!response.ok) {
+                        const message = payload && payload.message
+                            ? payload.message
+                            : '<?= $escaper->escapeJs(__('DHL pickup locations could not be loaded.')) ?>';
+
+                        if (response.status === 404 && payload && payload.message) {
+                            return {
+                                locations: [],
+                                noticeMessage: message
+                            };
+                        }
+
+                        throw new Error(message);
+                    }
+
+                    return payload;
+                })
+                .then(data => {
+                    if (data && data.noticeMessage) {
+                        this.locations = [];
+                        this.updateMarkers();
+                        this.showFinderNotice(data.noticeMessage);
+                        return;
+                    }
+
+                    const locations = data && Array.isArray(data.locations) ? data.locations : data;
+
+                    if (!Array.isArray(locations) || locations.length === 0) {
+                        this.locations = [];
+                        this.updateMarkers();
+                        this.showFinderNotice(
+                            '<?= $escaper->escapeJs(__('No DHL pickup locations were found for the specified address. Please try another address.')) ?>'
+                        );
+                        return;
+                    }
+
+                    this.clearFinderMessage();
+                    this.showMap = true;
+                    this.locations = locations;
+
+                    this.afterMapVisible(() => {
+                        this.updateMarkers();
+                        this.updateMapViewport();
+                        this.invalidateMapSize();
+                    });
                 })
                 .catch(error => {
+                    const message = error?.message || '<?= $escaper->escapeJs(__('DHL pickup locations could not be loaded.')) ?>';
+
+                    this.locations = [];
+                    this.updateMarkers();
+                    this.showFinderError(message);
+                    console.warn('DHL location finder:', message);
+                })
+                .finally(() => {
                     this.isLoading = false;
-                    this.map = false;
-                    this.initialAddress = {};
-                    dispatchMessages([
-                        {
-                            type: "error",
-                            text: "Unfortunately, the request could not be executed."
-                        }
-                    ], 3000);
-                    $wire.closeModal();
                 });
             },
             searchLocations() {            
-                if (JSON.stringify(this.address) === JSON.stringify(this.initialAddress)) {
+                if (!this.hasSearchableAddress()) {
+                    this.locations = [];
                     this.updateMarkers();
+                    this.showFinderNotice(
+                        '<?= $escaper->escapeJs(__('Please enter a postal code and city to search for DHL pickup locations.')) ?>'
+                    );
+                    return;
+                }
+
+                if (JSON.stringify(this.address) === JSON.stringify(this.initialAddress)) {
+                    this.showMap = true;
+                    this.afterMapVisible(() => {
+                        this.updateMarkers();
+                        this.updateMapViewport();
+                        this.invalidateMapSize();
+                    });
                     return;
                 }
 
@@ -138,9 +226,17 @@ $heroicons = $viewModels->require(HeroiconsOutline::class);
 
                 this.initialAddress = JSON.parse(JSON.stringify(this.address));
             },
-            updateCountry() {
-                this.address.countryCode = this.$el.value;
+            hasSearchableAddress() {
+                return Boolean(
+                    this.address
+                    && this.address.countryCode
+                    && this.address.postalCode
+                    && this.address.city
+                );
             },
+            updateCountry(event) {
+				this.address.countryCode = event?.target?.value || 'DE';
+			},
             isCountry() {
                 return this.address.countryCode === this.item.id;
             },
@@ -153,47 +249,134 @@ $heroicons = $viewModels->require(HeroiconsOutline::class);
             setStreet() {
                 this.address.street = this.$event.target.value;
             },
+            getMapContainer() {
+                return this.$refs?.mapContainer || document.getElementById('dhl-location-finder-map') || null;
+            },
+            isMapContainerUsable(container) {
+                return Boolean(
+                    container
+                    && container.isConnected
+                    && container.offsetWidth > 0
+                    && container.offsetHeight > 0
+                );
+            },
             initMap() {
-                if (this.loadfiles) {
-                    if (!this.map) {
-                        this.map = L.map('map');
-                        this.layers.postoffice = L.layerGroup();
-                        this.layers.locker = L.layerGroup();
-                        this.layers.servicepoint = L.layerGroup();
+                if (!this.showMap || !this.loadfiles || typeof L === 'undefined') {
+                    return;
+                }
 
-                        const overlays = {
-                            'postoffice': this.layers.postoffice,
-                            'locker': this.layers.locker,
-                            'servicepoint': this.layers.servicepoint
-                        };
+                const container = this.getMapContainer();
 
-                        const attribution = `© <a href="https://www.mapbox.com/about/maps/">Mapbox</a> © <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a> <strong><a href="https://www.mapbox.com/map-feedback/" target="_blank">Improve this map</a></strong>`;
-                        L.tileLayer(`https://api.mapbox.com/styles/v1/{id}/tiles/{z}/{x}/{y}?access_token=${this.mapboxApiToken}`, {
-                            maxZoom: 18,
-                            id: 'mapbox/streets-v11',
-                            tileSize: 512,
-                            zoomOffset: -1,
-                            accessToken: this.mapboxApiToken,
-                            attribution: attribution
-                        }).addTo(this.map);
-                    }
-                    if (this.locations && this.locations.length > 0) {
-                        this.setLocations(this.locations);
-                    }
-                    this.initLayerVisibility();
-                } 
+                if (!this.isMapContainerUsable(container)) {
+                    this.scheduleMapInit();
+                    return;
+                }
+
+                if (this.map && this.map._container && this.map._container.isConnected) {
+                    this.invalidateMapSize();
+                    return;
+                }
+
+                this.destroyMap();
+
+                this.map = L.map(container, {
+					zoomAnimation: false,
+					markerZoomAnimation: false,
+					fadeAnimation: false
+				});
+                this.layers.postoffice = L.layerGroup();
+                this.layers.locker = L.layerGroup();
+                this.layers.servicepoint = L.layerGroup();
+
+                if (!this.mapTileUrl) {
+                    this.errorHandler('<?= $escaper->escapeJs(__('DHL pickup location map could not be loaded.')) ?>');
+                    return;
+                }
+
+                L.tileLayer(this.mapTileUrl, {
+                    maxZoom: 18,
+                    tileSize: 512,
+                    zoomOffset: -1,
+                    id: 'mapbox/streets-v11',
+                    accessToken: this.mapboxApiToken,
+                    attribution: this.mapAttribution
+                }).addTo(this.map);
+
+                if (this.locations && this.locations.length > 0) {
+                    this.setLocations(this.locations);
+                }
+
+                this.initLayerVisibility();
+                this.invalidateMapSize();
+            },
+			destroyMap() {
+				if (!this.map) {
+					return;
+				}
+
+				const map = this.map;
+				this.map = null;
+
+				try {
+					if (typeof map.stop === 'function') {
+						map.stop();
+					}
+
+					if (typeof map.closePopup === 'function') {
+						map.closePopup();
+					}
+
+					map.off();
+
+					map.eachLayer(layer => {
+						try {
+							map.removeLayer(layer);
+						} catch (e) {
+							// ignore layer cleanup errors
+						}
+					});
+
+					map.remove();
+				} catch (e) {
+					console.warn('DHL location finder: could not destroy Leaflet map', e);
+				}
+
+				this.layers = {
+					postoffice: null,
+					locker: null,
+					servicepoint: null
+				};
+			},
+            scheduleMapInit() {
+                if (!this.showMap || this.mapInitScheduled) {
+                    return;
+                }
+
+                this.mapInitScheduled = true;
+
+                requestAnimationFrame(() => {
+                    setTimeout(() => {
+                        this.mapInitScheduled = false;
+                        this.initMap();
+                    }, 80);
+                });
+            },
+            escapeHtml(value) {
+                const div = document.createElement('div');
+                div.textContent = value == null ? '' : String(value);
+                return div.innerHTML;
             },
             setLocations(locations) {
                 if (locations && locations.length > 0 && this.map) {
-                    const firstLocation = locations[0];
-
-                    if (firstLocation.latitude && firstLocation.longitude) {
-                        this.map.setView([firstLocation.latitude, firstLocation.longitude], 15);
-                    } else {
-                        console.error('Invalid coordinates for the first location:', firstLocation);
-                    }
-
                     locations.forEach((location, index) => {
+                        const latitude = Number(location.latitude);
+                        const longitude = Number(location.longitude);
+
+                        if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+                            return;
+                        }
+
+                        const address = location.address || {};
                         const customIcon = L.icon({
                             iconUrl: location.icon,
                             iconSize: [55, 55],
@@ -202,21 +385,28 @@ $heroicons = $viewModels->require(HeroiconsOutline::class);
                             className: location.shop_type,
                         });
                         
+                        const countryCode = address.country_code || address.countryCode || address.country_id || '';
+                        const postalCodeValue = address.postal_code || address.postalCode || address.postcode || '';
                         const parcelData = {
-                          company: location.address.company,
-                          displayName: location.display_name,
-                          countryCode: location.address.country_code,
-                          postalCode: location.address.postal_code,
-                          number: location.shop_number,
-                          city: location.address.city,
-                          street: location.address.street,
-                          type: location.shop_type,
-                          id: location.shop_id
+                          company: address.company || '',
+                          displayName: location.display_name || location.displayName || '',
+                          countryCode: countryCode,
+                          postalCode: postalCodeValue,
+                          number: location.shop_number || location.number || '',
+                          city: address.city || '',
+                          street: address.street || '',
+                          type: location.shop_type || location.type || '',
+                          id: location.shop_id || location.id || ''
                         };
 
-                        const encodedParcelData = encodeURIComponent(JSON.stringify(parcelData));
+                        const encodedParcelData = encodeURIComponent(JSON.stringify(parcelData)).replace(/'/g, '%27');
+                        const displayName = this.escapeHtml(parcelData.displayName);
+                        const company = this.escapeHtml(parcelData.company);
+                        const street = this.escapeHtml(parcelData.street);
+                        const postalCode = this.escapeHtml(parcelData.postalCode);
+                        const city = this.escapeHtml(parcelData.city);
 
-                        let marker = L.marker([location.latitude, location.longitude], { icon: customIcon });
+                        let marker = L.marker([latitude, longitude], { icon: customIcon });
 
                         if (location.shop_type === 'postoffice') {
                             this.layers.postoffice.addLayer(marker);
@@ -228,19 +418,19 @@ $heroicons = $viewModels->require(HeroiconsOutline::class);
 
                         marker.bindPopup(`
                             <div class="flex flex-col">
-                                <span class="font-bold pb-2">${location.display_name}</span>
-                                <span class="font-bold">${location.address.company}</span>
-                                <span>${location.address.street}</span>
-                                <span>${location.address.postal_code} ${location.address.city}</span>
+                                <span class="font-bold pb-2">${displayName}</span>
+                                <span class="font-bold">${company}</span>
+                                <span>${street}</span>
+                                <span>${postalCode} ${city}</span>
                                 <div class="flex flex-row gap-x-2 pt-2">
-                                    <button type="button" class="auto btn btn-primary" 
-                                            data-parcel='${encodedParcelData}'
-                                            @click="onSelectParcelShop">
+                                    <button type="button" class="auto btn btn-primary"
+                                            data-dhl-parcel-select="1"
+                                            data-parcel='${encodedParcelData}'>
                                         <?= $escaper->escapeHtml(__('Select')) ?>
                                     </button>
-                                    <button type="button" 
-                                            class="text-base" 
-                                            @click="onParcelShopDetailClick"
+                                    <button type="button"
+                                            class="text-base"
+                                            data-dhl-parcel-detail="1"
                                             data-index="${index}">
                                         <?= /* @noEscape */ $heroicons->informationCircleHtml('information-circle', 20, 20) ?>
                                     </button>
@@ -251,13 +441,111 @@ $heroicons = $viewModels->require(HeroiconsOutline::class);
                 }
             },
             updateMarkers() {
-                if (this.map) {
-                    Object.values(this.layers).forEach(layerGroup => layerGroup.clearLayers());
+                if (!this.map || !this.map._container || !this.map._container.isConnected) {
+                    return;
                 }
+
+                if (this.layers) {
+                    Object.values(this.layers).forEach(layerGroup => {
+                        if (layerGroup) {
+                            layerGroup.clearLayers();
+                        }
+                    });
+                }
+
                 this.setLocations(this.locations);
             },                
+            showFinderNotice(message) {
+				this.finderNoticeMessage = message || '';
+				this.finderErrorMessage = '';
+				this.locations = [];
+				this.updateMarkers();
+				this.showMap = false;
+			},
+
+			showFinderError(message) {
+				this.finderErrorMessage = message || '';
+				this.finderNoticeMessage = '';
+				this.locations = [];
+				this.updateMarkers();
+				this.showMap = false;
+			},
+            clearFinderMessage() {
+                this.finderNoticeMessage = '';
+                this.finderErrorMessage = '';
+            },
+            afterMapVisible(callback) {
+                this.showMap = true;
+
+                requestAnimationFrame(() => {
+                    setTimeout(() => {
+                        this.initMap();
+
+                        if (this.map) {
+                            this.invalidateMapSize();
+                        }
+
+                        if (typeof callback === 'function') {
+                            callback();
+                        }
+                    }, 80);
+                });
+            },
+            invalidateMapSize() {
+                if (!this.map) {
+                    return;
+                }
+
+                const container = this.map._container || this.getMapContainer();
+                if (!this.isMapContainerUsable(container)) {
+                    return;
+                }
+
+                requestAnimationFrame(() => {
+                    const currentContainer = this.map?._container || this.getMapContainer();
+                    if (!this.map || !this.isMapContainerUsable(currentContainer)) {
+                        return;
+                    }
+
+                    this.map.invalidateSize();
+
+                    setTimeout(() => {
+                        const delayedContainer = this.map?._container || this.getMapContainer();
+                        if (this.map && this.isMapContainerUsable(delayedContainer)) {
+                            this.map.invalidateSize();
+                        }
+                    }, 100);
+                });
+            },
+            getValidLocationLatLngs(locations) {
+                return (Array.isArray(locations) ? locations : [])
+                    .map(location => [Number(location.latitude), Number(location.longitude)])
+                    .filter(latLng => Number.isFinite(latLng[0]) && Number.isFinite(latLng[1]));
+            },
+            updateMapViewport() {
+                if (!this.map || !Array.isArray(this.locations) || this.locations.length === 0) {
+                    return;
+                }
+
+                const latLngs = this.getValidLocationLatLngs(this.locations);
+
+                if (latLngs.length === 0) {
+                    return;
+                }
+
+                if (latLngs.length === 1) {
+                    this.map.setView(latLngs[0], 15);
+                    return;
+                }
+
+                const bounds = L.latLngBounds(latLngs);
+                this.map.fitBounds(bounds, {
+                    padding: [40, 40],
+                    maxZoom: 15
+                });
+            },
             setParcelShops(dataToSend) {
-                Magewire.emitTo('checkout.shipping.method.dhlpaket_bestway_packstation', 'parcel_packstation_saved', {
+                Magewire.emitTo('checkout.shipping.method.dhlpaket_bestway_parcel_packstation', 'parcel_packstation_saved', {
                     'deliveryLocation': {
                         type: dataToSend.type,
                         id: dataToSend.id,
@@ -278,6 +566,10 @@ $heroicons = $viewModels->require(HeroiconsOutline::class);
                 ], 3000);
             },
             initLayerVisibility() {
+                if (!this.map || !this.layers.postoffice || !this.layers.locker || !this.layers.servicepoint) {
+                    return;
+                }
+
                 if (this.visibility.postoffice) {
                     this.map.addLayer(this.layers.postoffice);
                 } else {
@@ -301,23 +593,69 @@ $heroicons = $viewModels->require(HeroiconsOutline::class);
                 this.toggleLayer(layer);
             },
             toggleLayer(layerType) {
-                const method = this.visibility[layerType] ? 'addLayer' : 'removeLayer';
-                this.map[method](this.layers[layerType]);
-                this.centerToNextLocation();
-            },
+				if (!this.map || !this.layers?.[layerType]) {
+					return;
+				}
+
+				const method = this.visibility[layerType] ? 'addLayer' : 'removeLayer';
+				this.map[method](this.layers[layerType]);
+				this.centerToNextLocation();
+			},
             centerToNextLocation() {
-                const visible = this.locations.filter(loc => this.visibility[loc.shop_type]);
-                if (visible.length > 0) {
-                    const bounds = L.latLngBounds(visible.map(loc => [loc.latitude, loc.longitude]));
-                    this.map.fitBounds(bounds, { maxZoom: 15 });
-                }
-            },
+				if (!this.map || !Array.isArray(this.locations)) {
+					return;
+				}
+
+				const visible = this.locations.filter(loc => this.visibility[loc.shop_type]);
+				const latLngs = this.getValidLocationLatLngs(visible);
+
+				if (latLngs.length === 0) {
+					return;
+				}
+
+				this.map.fitBounds(L.latLngBounds(latLngs), { maxZoom: 15 });
+			},
             onCloseParcelShopDetail() {
                 this.showParcelShops = false;
             },
-            onParcelShopDetailClick(event) {
-                const index = Number(event.currentTarget.dataset.index);
+            bindPopupEventDelegation() {
+                if (this.popupDelegationBound) {
+                    return;
+                }
+
+                this.popupDelegationBound = true;
+
+                const root = this.$el || document;
+                root.addEventListener('click', event => {
+                    const target = event.target instanceof Element ? event.target : null;
+                    if (!target) {
+                        return;
+                    }
+
+                    const selectButton = target.closest('[data-dhl-parcel-select]');
+                    if (selectButton) {
+                        event.preventDefault();
+                        this.handleParcelSelectButton(selectButton);
+                        return;
+                    }
+
+                    const detailButton = target.closest('[data-dhl-parcel-detail]');
+                    if (detailButton) {
+                        event.preventDefault();
+                        this.handleParcelDetailButton(detailButton);
+                    }
+                });
+            },
+            handleParcelDetailButton(button) {
+                const index = Number(button?.dataset?.index);
+                if (!Number.isInteger(index)) {
+                    return;
+                }
+
                 this.showParcelShopDetail(index);
+            },
+            onParcelShopDetailClick(event) {
+                this.handleParcelDetailButton(event.currentTarget);
             },
             hasOpeningHours() {
                 return Array.isArray(this.selectedLocation?.opening_hours) && this.selectedLocation.opening_hours.length > 0;
@@ -325,19 +663,37 @@ $heroicons = $viewModels->require(HeroiconsOutline::class);
             hasServices() {
                 return Array.isArray(this.selectedLocation?.services) && this.selectedLocation.services.length > 0;
             },
-            showParcelShopDetail(index) {
-                if (this.currentDetailIndex === index) {
-                    this.showParcelShops = !this.showParcelShops;
-                } else {
-                    this.currentDetailIndex = index;
-                    this.selectedLocation = this.locations[index]; // <-- WICHTIG
-                    this.showParcelShops = true;
-                    this.map.setView([this.selectedLocation.latitude, this.selectedLocation.longitude]);
+			showParcelShopDetail(index) {
+				if (!this.map || !Array.isArray(this.locations) || !this.locations[index]) {
+					return;
+				}
+
+				const location = this.locations[index];
+				const latitude = Number(location.latitude);
+				const longitude = Number(location.longitude);
+
+				if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+					return;
+				}
+
+				if (this.currentDetailIndex === index) {
+					this.showParcelShops = !this.showParcelShops;
+					return;
+				}
+
+				this.currentDetailIndex = index;
+				this.selectedLocation = location;
+				this.showParcelShops = true;
+
+				if (this.map && this.map._container && this.map._container.isConnected) {
+					this.map.setView([latitude, longitude]);
+				}
+			},
+            handleParcelSelectButton(button) {
+                const raw = button?.dataset?.parcel;
+                if (!raw) {
+                    return;
                 }
-            },
-            onSelectParcelShop(event) {
-                const raw = event.currentTarget?.dataset?.parcel;
-                if (!raw) return;
 
                 try {
                     const decoded = decodeURIComponent(raw);
@@ -347,8 +703,12 @@ $heroicons = $viewModels->require(HeroiconsOutline::class);
                     this.errorHandler('Invalid parcel data: ' + e.message);
                 }
             },
+            onSelectParcelShop(event) {
+                this.handleParcelSelectButton(event.currentTarget);
+            },
             errorHandler(message) {
-                console.error(message);
+                this.showFinderError(message);
+                console.warn('DHL location finder:', message);
             }
         }
     };
@@ -360,28 +720,6 @@ $heroicons = $viewModels->require(HeroiconsOutline::class);
     window.addEventListener('alpine:init', () => {
         Alpine.data('mapdata', mapdata);                          
     }, { once: true });
-
-<?php /*?>    (() => {
-        if (hyva && hyva.formValidation) {
-            hyva.formValidation.addRule('postnummer-alnum-6-10', (value) => {
-                const v = String(value || '').trim();
-                if (v === '') return true;
-                return /^[A-Za-z0-9]{6,10}$/.test(v)
-                    ? true
-                    : '<?= $escaper->escapeJs(__('Please enter a valid DHL post number (6–10 alphanumeric characters).')) ?>';
-            });
-
-            hyva.formValidation.addRule('required-if-locker', (value) => {
-                const type =
-                    document.querySelector('[name="delivery_location_type"]')?.value
-                    ?? window?.hyvaCheckout?.evaluation?.component?.data?.deliveryLocation?.type
-                    ?? '';
-                return String(type).toLowerCase() !== 'locker' || String(value || '').trim() !== ''
-                    ? true
-                    : '<?= $escaper->escapeJs(__('This is a required field.')) ?>';
-            });
-        }
-    })();<?php */?>
                 
     window.addEventListener('checkout:init:evaluation', event => {
         hyvaCheckout.evaluation.registerValidator('validateDhlPostnumber', (element, component) => {
@@ -390,9 +728,8 @@ $heroicons = $viewModels->require(HeroiconsOutline::class);
             const isLocker = type === 'locker';
 
             const input = document.querySelector('[name="dhl_postnumber"], #dhl-postnumber');
-            const raw   = (input?.value ?? dl.customerPostnumber ?? '').toString().trim();
-            const val   = raw.slice(0, 10);
-            const isValid = /^[A-Za-z0-9]{6,10}$/.test(val);
+            const val = (input?.value ?? dl.customerPostnumber ?? '').toString().trim();
+            const isValid = /^\d{6,10}$/.test(val);
 
             if ((isLocker && val === '') || (val !== '' && !isValid) ) {
                 if (window.Livewire) {
@@ -408,5 +745,20 @@ $heroicons = $viewModels->require(HeroiconsOutline::class);
             return true;
         });
     });
+    window.addEventListener('checkout:step:loaded', function(event) {
+        var quoteData = window.checkoutConfig && window.checkoutConfig.quoteData ? window.checkoutConfig.quoteData : {};
+        if (
+            quoteData.dhl_packstation_id ||
+            quoteData.dhl_postfiliale_id ||
+            (quoteData.dhl_services && quoteData.dhl_services.length > 0)
+        ) {
+            if (window.Livewire) {
+                window.Livewire.emit('refreshState');
+            }
+            if (typeof $wire !== 'undefined' && $wire.refreshState) {
+                $wire.refreshState();
+            }
+        }
+    }, { once: true });
 </script>
 <?php $hyvaCsp->registerInlineScript() ?>

@@ -5,99 +5,254 @@ namespace Hyva\ShippingDhlDe\Magewire;
 
 use Dhl\Paket\Model\ShippingSettings\ShippingOption\Codes as DhlCodes;
 use Dhl\Paket\Model\Config\ModuleConfig;
+use Hyva\ShippingDhlDe\Model\Checkout\DhlCheckoutDataProvider;
+use Hyva\ShippingDhlDe\Model\Checkout\DhlOptionAvailabilityResolver;
+use Hyva\ShippingDhlDe\Model\Checkout\DhlOptionSelectionCleaner;
+use Hyva\ShippingDhlDe\Model\Checkout\DhlOptionSelectionManager;
+use Hyva\ShippingDhlDe\Model\Checkout\DhlShippingContextResolver;
+use Magento\Checkout\Model\Session as CheckoutSession;
+use Magento\Framework\App\Config\ScopeConfigInterface;
+use Magento\Store\Model\StoreManagerInterface;
+use Netresearch\ShippingCore\Api\Data\ShippingSettings\ShippingOption\InputInterface;
+use Netresearch\ShippingCore\Api\Data\ShippingSettings\ShippingOption\OptionInterface;
 use Netresearch\ShippingCore\Api\Data\ShippingSettings\ShippingOption\Selection\SelectionInterface;
+use Netresearch\ShippingCore\Api\Data\ShippingSettings\ShippingOptionInterface;
+use Netresearch\ShippingCore\Model\ShippingSettings\ShippingOption\Selection\QuoteSelectionManager;
+use Netresearch\ShippingCore\Model\ShippingSettings\ShippingOption\Selection\QuoteSelectionRepository;
 
 /**
  * Magewire component for managing the DHL "Preferred Day" delivery option.
  *
- * Handles the selection, validation, and exclusive state management for choosing a preferred delivery date.
+ * Fully integrated into the central DeliveryOptions parent component.
  */
 class PreferredDay extends ShippingOptions
 {
-    /**
-     * Selected preferred delivery day (Y-m-d format) or null if not set.
-     *
-     * @var string|null
-     */
+    public const SERVICE_CODE = DhlCodes::SERVICE_OPTION_PREFERRED_DAY;
+
+    /** @var string|null Selected preferred day (Y-m-d format or null) */
     public ?string $preferredDay = null;
 
-    /**
-     * The additional fee for the Preferred Day service.
-     *
-     * @var float
-     */
+    /** @var float Additional fee for Preferred Day delivery */
     public float $fee = 0.0;
 
     /**
-     * Event listeners for this component.
-     *
-     * @var array<string, string>
+     * @var array<int, array{value: string, label: string}>
      */
+    public array $availableDays = [];
+
+    /** @var bool Whether the option is disabled */
+    public bool $disabled = false;
+
+    /** @var bool Whether the option is hidden */
+    public bool $hidden = false;
+
+    /** @var array Magewire event listeners */
     protected $listeners = [
-        'activeServiceChanged' => 'onActiveServiceChanged',
+        'updateState' => 'onUpdateState',
+        'preferredDaySelected' => 'selectPreferredDay',
     ];
 
+    public function __construct(
+        ModuleConfig $moduleConfig,
+        StoreManagerInterface $storeManager,
+        QuoteSelectionManager $quoteSelectionManager,
+        ShippingOptionInterface $shippingOption,
+        CheckoutSession $checkoutSession,
+        ScopeConfigInterface $scopeConfig,
+        QuoteSelectionRepository $quoteSelectionRepository,
+        DhlShippingContextResolver $dhlShippingContextResolver,
+        DhlOptionSelectionManager $dhlOptionSelectionManager,
+        DhlOptionAvailabilityResolver $dhlOptionAvailabilityResolver,
+        DhlOptionSelectionCleaner $dhlOptionSelectionCleaner,
+        private readonly DhlCheckoutDataProvider $dhlCheckoutDataProvider
+    ) {
+        parent::__construct(
+            $moduleConfig,
+            $storeManager,
+            $quoteSelectionManager,
+            $shippingOption,
+            $checkoutSession,
+            $scopeConfig,
+            $quoteSelectionRepository,
+            $dhlShippingContextResolver,
+            $dhlOptionSelectionManager,
+            $dhlOptionAvailabilityResolver,
+            $dhlOptionSelectionCleaner
+        );
+    }
+
     /**
-     * Lifecycle method called when the component is mounted.
-     * Loads the preferred day selection and fee, and requests exclusivity if set.
+     * Magewire lifecycle hook.
+     * Loads the preferred day from the database and initializes the fee.
      *
      * @return void
      */
     public function mount(): void
     {
         /** @var SelectionInterface[] $quoteSelections */
-        $quoteSelections = $this->loadFromDb(DhlCodes::SERVICE_OPTION_PREFERRED_DAY);
+        $quoteSelections = $this->loadFromDb(self::SERVICE_CODE);
 
         if ($quoteSelections && isset($quoteSelections['date'])) {
-            $val = (string)$quoteSelections['date']->getInputValue();
+            $val = trim((string)$quoteSelections['date']->getInputValue());
             $this->preferredDay = ($val !== '') ? $val : null;
-            if ($this->preferredDay) {
-                // Request exclusive activation for this service.
-                $this->emitUp('requestExclusive', 'preferredDay');
-            }
         }
 
+        $this->availableDays = $this->getAvailableDays();
         $this->fee = (float)$this->scopeConfig->getValue(ModuleConfig::CONFIG_PATH_PREFERRED_DAY_CHARGE);
     }
 
     /**
-     * Handles changes to the active exclusive service.
-     * Clears this component's value if another exclusive service becomes active.
+     * Handles updates from the parent component.
+     * Resets value if hidden while active, and updates state.
      *
-     * @param string|null $activeService The currently active exclusive service, or null.
+     * @param mixed ...$args
      * @return void
      */
-    public function onActiveServiceChanged(?string $activeService = null): void
+    public function onUpdateState(...$args): void
     {
-        if ($activeService !== 'preferredDay' && $this->preferredDay !== null) {
-            $this->clearValuesAndPersist();
+        if (count($args) === 1 && isset($args[0]) && is_array($args[0]) && array_key_exists(1, $args[0])) {
+            $args = $args[0];
         }
+
+        $isDisabled = (bool)($args[1] ?? false);
+        $isHidden = (bool)($args[2] ?? false);
+
+        $this->availableDays = $isHidden ? [] : $this->getAvailableDays();
+
+        if (($isHidden || $isDisabled) && $this->hasPreferredDay()) {
+            $this->clearValue();
+        }
+
+        if ($this->hasPreferredDay() && $this->availableDays !== []) {
+            $availableValues = array_map(
+                static fn (array $day): string => trim((string)($day['value'] ?? '')),
+                $this->availableDays
+            );
+
+            if (!in_array(trim((string)$this->preferredDay), $availableValues, true)) {
+                $this->clearValue();
+            }
+        }
+
+        $this->disabled = $isDisabled;
+        $this->hidden   = $isHidden;
     }
 
     /**
-     * Clears the preferred day value and releases exclusive access.
+     * Clears the selected preferred day and notifies the parent.
      *
      * @return void
      */
-    public function clearValuesAndPersist(): void
+    public function clearValue(): void
     {
         $this->preferredDay = null;
-        $this->persistFieldUpdate('date', '', DhlCodes::SERVICE_OPTION_PREFERRED_DAY);
-        $this->emitUp('releaseExclusive', 'preferredDay');
+        $this->persistFieldUpdate('date', '', self::SERVICE_CODE);
+        $this->emitUp('releaseExclusive', self::SERVICE_CODE);
+        $this->emitToRefresh('price-summary.total-segments');
     }
 
     /**
-     * Handler for when the preferredDay property is updated.
-     * Persists the new value, updates exclusivity, and refreshes the price summary.
+     * Checks whether a preferred day is currently selected.
      *
-     * @param string|null $value The new preferred day (Y-m-d format) or null.
-     * @return mixed Result of the field persistence operation.
+     * @return bool
      */
-    public function updatedPreferredDay(?string $value): mixed
+    public function hasPreferredDay(): bool
     {
-        $res = $this->persistFieldUpdate('date', $value ?? '', DhlCodes::SERVICE_OPTION_PREFERRED_DAY);
-        $this->emitUp(!empty($value) ? 'requestExclusive' : 'releaseExclusive', 'preferredDay');
+        return trim((string)$this->preferredDay) !== '';
+    }
+
+    /**
+     * Selects the preferred day explicitly from the rendered vendor options.
+     *
+     * @param string|null $value
+     * @return void
+     */
+    public function selectPreferredDay(?string $value = null): void
+    {
+        if ($value === null) {
+            $value = $this->preferredDay;
+        }
+
+        $value = trim((string)$value);
+        $this->preferredDay = $value !== '' ? $value : null;
+
+        if ($this->hasPreferredDay() && !$this->isAvailablePreferredDay($this->preferredDay)) {
+            $this->preferredDay = null;
+        }
+
+        $this->persistFieldUpdate('date', $this->preferredDay ?? '', self::SERVICE_CODE);
+        $this->emitUp($this->hasPreferredDay() ? 'requestExclusive' : 'releaseExclusive', self::SERVICE_CODE);
         $this->emitToRefresh('price-summary.total-segments');
-        return $res;
+    }
+
+    /**
+     * @return array<int, array{value: string, label: string}>
+     */
+    private function getAvailableDays(): array
+    {
+        $serviceOption = $this->dhlCheckoutDataProvider->getServiceOptionByCode(self::SERVICE_CODE);
+        if (!$serviceOption) {
+            return [];
+        }
+
+        foreach ($serviceOption->getInputs() as $input) {
+            if (!$input instanceof InputInterface || $input->getCode() !== 'date') {
+                continue;
+            }
+
+            return array_values(array_filter(array_map(
+                static function (OptionInterface $option): ?array {
+                    $value = trim((string)$option->getValue());
+                    if ($value === '' || $value === 'none') {
+                        return null;
+                    }
+
+                    $label = trim((string)$option->getLabel());
+
+                    return [
+                        'value' => $value,
+                        'label' => $label !== '' ? $label : $value,
+                    ];
+                },
+                array_filter(
+                    $input->getOptions(),
+                    static fn ($option): bool => $option instanceof OptionInterface
+                )
+            )));
+        }
+
+        return [];
+    }
+
+    /**
+     * Checks whether a preferred day value is present in the current vendor options.
+     *
+     * @param string|null $value
+     * @return bool
+     */
+    private function isAvailablePreferredDay(?string $value): bool
+    {
+        $value = trim((string)$value);
+        if ($value === '') {
+            return true;
+        }
+
+        $availableValues = array_map(
+            static fn (array $day): string => trim((string)($day['value'] ?? '')),
+            $this->availableDays
+        );
+
+        return in_array($value, $availableValues, true);
+    }
+
+    /**
+     * Handles updates when the preferred day is changed by the user.
+     *
+     * @param string|null $value
+     * @return void
+     */
+    public function updatedPreferredDay(?string $value): void
+    {
+        $this->selectPreferredDay($value);
     }
 }

@@ -26,8 +26,7 @@ $postnumberDescriptionId = 'dhl-postnumber-description';
         </legend>
         <?= /* @noEscape */ $tooltip->render(__('Adjust your parcel delivery flexibly to your schedule. Receive your packages while on the go at one of over 28,000 pickup locations in Germany - at a DHL parcel station or post office. Wherever it best suits your needs.')) ?>
     </div>
-
-    <?php if (!$magewire->checkAndSetShippingAddress()): ?>
+    <?php if (empty($magewire->shippingAddress)): ?>
         <p class="message warning p-4 bg-gray-100 rounded-lg mt-2">
             <?= $escaper->escapeHtml(__('Please provide your delivery address before selecting a pickup point.')) ?>
         </p>
@@ -84,7 +83,7 @@ $postnumberDescriptionId = 'dhl-postnumber-description';
                         <div class="field-wrapper field-type-text field field-reserved my-3 flex flex-col items-start justify-start
                                 <?= !empty($magewire->postnumberError) ? ' field-error' : '' ?>">
                             <div class="inline-flex items-center">
-                                <label class="text-slate-800 text-base font-medium m-3 ml-0"
+                                <label class="label font-bold mr-3"
                                        for="<?= $escaper->escapeHtmlAttr($postnumberInputId) ?>">
                                     <?= $escaper->escapeHtml(__('DHL Post Number')) ?>
                                 </label>
@@ -103,7 +102,8 @@ $postnumberDescriptionId = 'dhl-postnumber-description';
                                    name="dhl_postnumber"
                                    autocomplete="off"
                                    maxlength="10"
-                                   pattern="\d*"
+                                   inputmode="numeric"
+                                   pattern="\d{6,10}"
                                    <?php if (isset($magewire->deliveryLocation['type']) && $magewire->deliveryLocation['type'] === 'locker'): ?>
                                        required
                                    <?php endif; ?>
@@ -131,5 +131,4 @@ $postnumberDescriptionId = 'dhl-postnumber-description';
             </div>
         </div>
     <?php endif; ?>
-
 </fieldset>

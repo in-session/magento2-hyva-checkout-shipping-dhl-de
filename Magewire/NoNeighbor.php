@@ -9,126 +9,102 @@ use Netresearch\ShippingCore\Api\Data\ShippingSettings\ShippingOption\Selection\
 
 /**
  * Magewire component for managing the DHL "No Neighbor Delivery" option.
- *
- * Handles enabling/disabling, fee calculation, state synchronization, and
- * exclusive option management for the "No Neighbor" shipping service.
  */
 class NoNeighbor extends ShippingOptions
 {
-    /**
-     * Indicates if "No Neighbor Delivery" is enabled.
-     *
-     * @var bool
-     */
-    public bool $noNeighbor = false;
+    public const SERVICE_CODE = DhlCodes::SERVICE_OPTION_NO_NEIGHBOR_DELIVERY;
 
-    /**
-     * The additional fee for the "No Neighbor Delivery" service.
-     *
-     * @var float
-     */
+    /** @var bool Whether the "No Neighbor" option is selected */
+    public ?bool $noNeighbor = false;
+
+    /** @var float Fee for "No Neighbor Delivery" */
     public float $fee = 0.0;
 
-    /**
-     * Whether the option is currently disabled (because another exclusive option is active).
-     *
-     * @var bool
-     */
+    /** @var bool Whether the option is disabled */
     public bool $disabled = false;
 
-    /**
-     * Event listeners for this component.
-     *
-     * @var array<string, string>
-     */
+    /** @var bool Whether the option is hidden */
+    public bool $hidden = false;
+
+    /** @var array Magewire event listeners */
     protected $listeners = [
-        'activeServiceChanged' => 'onActiveServiceChanged',
+        'updateState' => 'onUpdateState',
     ];
 
     /**
-     * Lifecycle method called when the component is mounted.
-     * Loads current selection state and fee, and manages exclusivity if needed.
+     * Magewire lifecycle hook.
+     * Loads the current state from the database and initializes the fee.
      *
      * @return void
      */
     public function mount(): void
     {
         /** @var SelectionInterface[] $quoteSelections */
-        $quoteSelections = $this->loadFromDb(DhlCodes::SERVICE_OPTION_NO_NEIGHBOR_DELIVERY);
+        $quoteSelections = $this->loadFromDb(self::SERVICE_CODE);
 
         if ($quoteSelections && isset($quoteSelections['enabled'])) {
             $this->noNeighbor = (bool)$quoteSelections['enabled']->getInputValue();
-            if ($this->noNeighbor) {
-                // Request exclusivity for this option if already enabled.
-                $this->emitUp('requestExclusive', 'noNeighbor');
-            }
         }
 
         $this->fee = (float)$this->scopeConfig->getValue(ModuleConfig::CONFIG_PATH_NO_NEIGHBOR_DELIVERY_CHARGE);
-        
-        if (!$this->noNeighbor) {
-            $this->checkForOtherActiveServices();
-        }
     }
 
     /**
-     * Handler for active service change events.
-     * Disables this option and clears its value if another exclusive option is active.
+     * Handles state updates from the parent component (DeliveryOptions).
+     * Reacts to changes in active codes, disabled, and hidden state.
      *
-     * @param string|null $activeService The name of the currently active exclusive service.
+     * @param array $activeServiceCodes
+     * @param bool $isDisabled
+     * @param bool $isHidden
      * @return void
      */
-    public function onActiveServiceChanged(?string $activeService = null): void
+    public function onUpdateState(array $activeServiceCodes, bool $isDisabled, bool $isHidden): void
     {
-        if ($activeService !== 'noNeighbor' && $this->noNeighbor) {
+        // If the component should be hidden while it is still active, reset itself.
+        if (($isHidden || $isDisabled) && $this->noNeighbor) {
             $this->clearValue();
         }
-        $this->disabled = ($activeService !== null && $activeService !== 'noNeighbor');
+
+        $this->disabled = $isDisabled;
+        $this->hidden   = $isHidden;
     }
 
     /**
-     * Clears the value of this service and releases exclusivity.
+     * Resets the selection and releases exclusivity.
      *
      * @return void
      */
     public function clearValue(): void
     {
         $this->noNeighbor = false;
-        $this->persistFieldUpdate('enabled', false, DhlCodes::SERVICE_OPTION_NO_NEIGHBOR_DELIVERY);
-        $this->emitUp('releaseExclusive', 'noNeighbor');
+        $this->persistFieldUpdate('enabled', false, self::SERVICE_CODE);
+        $this->emitUp('releaseExclusive', self::SERVICE_CODE);
     }
 
     /**
-     * Handler for when the noNeighbor property is updated.
-     * Persists the value, updates exclusivity, and triggers a refresh of the price summary.
+     * Handler when the user changes the checkbox state.
      *
-     * @param bool $value The new state for "No Neighbor Delivery".
-     * @return mixed Result of the field persistence operation.
+     * @param bool $value
+     * @return mixed
      */
-    public function updatedNoNeighbor(bool $value): mixed
-    {
-        $res = $this->persistFieldUpdate('enabled', $value, DhlCodes::SERVICE_OPTION_NO_NEIGHBOR_DELIVERY);
-        $this->emitUp($value ? 'requestExclusive' : 'releaseExclusive', 'noNeighbor');
-        $this->emitToRefresh('price-summary.total-segments');
-        return $res;
-    }
-    
-    /**
-     * Checks on page load if another exclusive service is already active in the quote.
-     * If so, this component disables itself immediately without waiting for events.
-     */
-    private function checkForOtherActiveServices(): void
-    {
-        $otherExclusiveServices = [
-            DhlCodes::SERVICE_OPTION_NEIGHBOR_DELIVERY,
-        ];
+	public function updatedNoNeighbor(?bool $value): mixed
+	{
+		$this->noNeighbor = (bool) $value;
 
-        foreach ($otherExclusiveServices as $serviceCode) {
-            $selections = $this->loadFromDb($serviceCode);
-            if ($this->selectionsHaveValue($selections)) {
-                $this->disabled = true;
-                return;
-            }
-        }
-    }
+		$res = $this->persistFieldUpdate('enabled', $this->noNeighbor, self::SERVICE_CODE);
+
+		$this->emitUp(
+			$this->noNeighbor ? 'requestExclusive' : 'releaseExclusive',
+			self::SERVICE_CODE
+		);
+
+		$this->emitToRefresh('price-summary.total-segments');
+
+		return $res;
+	}
+
+	public function toggleNoNeighbor(): mixed
+	{
+		return $this->updatedNoNeighbor(!(bool) $this->noNeighbor);
+	}
 }

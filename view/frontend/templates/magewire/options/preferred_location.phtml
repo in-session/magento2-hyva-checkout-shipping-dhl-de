@@ -1,0 +1,27 @@
+<?php
+declare(strict_types=1);
+
+use Dhl\Paket\Model\ShippingSettings\ShippingOption\Codes as DhlCodes;
+use Hyva\ShippingDhlDe\Magewire\PreferredLocation;
+use Hyva\ShippingDhlDe\ViewModel\Tooltip;
+
+/** @var \Hyva\ShippingDhlDe\Magewire\DeliveryOptions $magewire */
+$magewire = $block->getData('dhl_delivery_options');
+if (!$magewire instanceof \Hyva\ShippingDhlDe\Magewire\DeliveryOptions) {
+    return;
+}
+$viewModels = $block->getData('dhl_view_models') ?? ($viewModels ?? null);
+if (!$viewModels instanceof \Hyva\Theme\Model\ViewModelRegistry) {
+    return;
+}
+$escaper = $block->getData('dhl_escaper') ?? ($escaper ?? null);
+if (!$escaper instanceof \Magento\Framework\Escaper) {
+    return;
+}
+$tooltip = $viewModels->require(Tooltip::class);
+$code = DhlCodes::SERVICE_OPTION_DROPOFF_DELIVERY;
+if ($magewire->isOptionHidden($code)) { return; }
+$disabled = $magewire->isOptionDisabled($code);
+$descriptionId = 'preferred-location-desc';
+?>
+<fieldset class="p-4 bg-white rounded-lg mt-0"><div class="flex items-start gap-4 relative font-semibold mb-2" id="<?= $escaper->escapeHtmlAttr($descriptionId) ?>"><legend class="text-slate-800 text-base font-medium mb-0"><?= $escaper->escapeHtml(__('Drop-off Location: Delivery to your preferred drop-off location')) ?></legend><?= /* @noEscape */ $tooltip->render(__('Choose a weather-protected and non-visible place on your property where we can deposit the parcel in your absence.')) ?></div><div><input wire:model.lazy="preferredLocation" type="text" id="preferred_location" class="block w-full form-input grow renderer-text<?= $disabled ? ' opacity-50 pointer-events-none' : '' ?>" placeholder="<?= $escaper->escapeHtmlAttr(__('E.g. garage, terrace'))?>" maxlength="<?= $escaper->escapeHtmlAttr((string) PreferredLocation::MAX_LENGTH) ?>" <?= $disabled ? 'disabled' : '' ?> aria-label="<?= $escaper->escapeHtmlAttr(__('Your preferred drop-off location')) ?>" aria-describedby="<?= $escaper->escapeHtmlAttr($descriptionId) ?>" /><?php if (trim((string)$magewire->preferredLocation) !== ''): ?><button type="button" class="btn btn-secondary mt-3" wire:click="clearPreferredLocation"><?= $escaper->escapeHtml(__('Remove drop-off location')) ?></button><?php endif; ?></div></fieldset>

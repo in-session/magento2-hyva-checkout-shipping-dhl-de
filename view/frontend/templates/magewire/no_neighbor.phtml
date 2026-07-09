@@ -21,7 +21,7 @@ $feenote = str_replace('$1', $formatterViewModel->currency($magewire->fee), $fee
 $feeNoteId = 'no-neighbor-fee-note';
 ?>
 
-<fieldset class="p-4 bg-white rounded-lg mt-0">
+<fieldset class="p-4 bg-white rounded-lg mt-0<?= $magewire->hidden ? ' hidden' : '' ?>">
     <div class="flex items-start mb-2">
         <legend class="text-slate-800 text-base font-medium mb-0">
             <?= $escaper->escapeHtml(__('No Neighbor Delivery: Discreet Dispatch')) ?>
@@ -31,7 +31,8 @@ $feeNoteId = 'no-neighbor-fee-note';
 
     <label class="inline-flex items-start gap-x-4"
            for="noNeighbor">
-        <input wire:model="noNeighbor"
+        <input wire:click="toggleNoNeighbor"
+			   <?= (bool) $magewire->noNeighbor ? 'checked' : '' ?>
                type="checkbox"
                id="noNeighbor"
                class="form-checkbox flex-none <?= $magewire->disabled ? ' opacity-50 pointer-events-none' : '' ?>"
@@ -44,11 +45,9 @@ $feeNoteId = 'no-neighbor-fee-note';
             <?= $escaper->escapeHtml(__('Use No Neighbour Delivery Service')) ?>
         </span>
     </label>
-    
     <?php if ($magewire->fee > 0): ?>
-        <p class="form-hint-text mt-2 text-sm text-slate-500 w-full" id="<?= $escaper->escapeHtmlAttr($feeNoteId) ?>">
+        <p class="text-sm" id="<?= $escaper->escapeHtmlAttr($feeNoteId) ?>">
             <?= $escaper->escapeHtml($feenote); ?>
         </p>
     <?php endif; ?>
-
 </fieldset>

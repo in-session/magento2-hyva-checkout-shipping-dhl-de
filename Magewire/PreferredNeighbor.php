@@ -8,147 +8,126 @@ use Netresearch\ShippingCore\Api\Data\ShippingSettings\ShippingOption\Selection\
 
 /**
  * Magewire component for managing the DHL "Preferred Neighbor" delivery option.
- *
- * Handles enabling/disabling the option, storing neighbor name/address,
- * exclusive state management, and persistence of input values.
  */
 class PreferredNeighbor extends ShippingOptions
 {
-    /**
-     * The name of the preferred neighbor for delivery (or empty string if unset).
-     *
-     * @var string
-     */
-    public string $preferredNeighborName = '';
+    /** @var string Constant for the service code */
+    public const SERVICE_CODE = DhlCodes::SERVICE_OPTION_NEIGHBOR_DELIVERY;
 
-    /**
-     * The address of the preferred neighbor for delivery (or empty string if unset).
-     *
-     * @var string
-     */
-    public string $preferredNeighborAddress = '';
+    /** @var string|null Name of the preferred neighbor */
+    public ?string $preferredNeighborName = null;
 
-    /**
-     * Whether the preferred neighbor option is currently disabled (because another exclusive service is active).
-     *
-     * @var bool
-     */
+    /** @var string|null Address of the preferred neighbor */
+    public ?string $preferredNeighborAddress = null;
+
+    /** @var bool Whether the option is disabled */
     public bool $disabled = false;
 
-    /**
-     * Event listeners for this component.
-     *
-     * @var array<string, string>
-     */
+    /** @var bool Whether the option is hidden */
+    public bool $hidden = false;
+
+    /** @var array Magewire event listeners */
     protected $listeners = [
-        'activeServiceChanged' => 'onActiveServiceChanged',
+        'updateState' => 'onUpdateState',
     ];
 
     /**
-     * Lifecycle method called on component mount.
-     * Loads the neighbor name and address, and requests exclusivity if set.
+     * Magewire lifecycle hook.
+     * Loads neighbor details from the database on mount.
      *
      * @return void
      */
     public function mount(): void
     {
         /** @var SelectionInterface[] $quoteSelections */
-        $quoteSelections = $this->loadFromDb(DhlCodes::SERVICE_OPTION_NEIGHBOR_DELIVERY);
+        $quoteSelections = $this->loadFromDb(self::SERVICE_CODE);
 
-        if ($quoteSelections) {
-            $this->preferredNeighborName    = (string)($quoteSelections['name']->getInputValue()    ?? '');
-            $this->preferredNeighborAddress = (string)($quoteSelections['address']->getInputValue() ?? '');
-
-            if ($this->preferredNeighborName !== '' || $this->preferredNeighborAddress !== '') {
-                // Request exclusive activation for this service.
-                $this->emitUp('requestExclusive', 'preferredNeighbor');
-            }
+        if (isset($quoteSelections['name'])) {
+            $value = (string) $quoteSelections['name']->getInputValue();
+            $this->preferredNeighborName = $value !== '' ? $value : null;
         }
-        
-        if (!$this->preferredNeighborName && !$this->preferredNeighborAddress) {
-            $this->checkForOtherActiveServices();
+
+        if (isset($quoteSelections['address'])) {
+            $value = (string) $quoteSelections['address']->getInputValue();
+            $this->preferredNeighborAddress = $value !== '' ? $value : null;
         }
     }
 
     /**
-     * Handles changes to the active exclusive service.
-     * Disables this option and resets its values if another exclusive service becomes active.
+     * Handles state updates from the parent component.
+     * If hidden while set, resets the neighbor fields.
      *
-     * @param string|null $activeService The currently active exclusive service, or null.
+     * @param array $activeServiceCodes
+     * @param bool $isDisabled
+     * @param bool $isHidden
      * @return void
      */
-    public function onActiveServiceChanged(?string $activeService = null): void
+    public function onUpdateState(array $activeServiceCodes, bool $isDisabled, bool $isHidden): void
     {
-        $shouldReset = $activeService !== 'preferredNeighbor'
-            && ($this->preferredNeighborName !== '' || $this->preferredNeighborAddress !== '');
-        if ($shouldReset) {
+        if (
+            ($isHidden || $isDisabled)
+            && (trim((string)$this->preferredNeighborName) !== '' || trim((string)$this->preferredNeighborAddress) !== '')
+        ) {
             $this->resetFields();
         }
-        $this->disabled = ($activeService !== null && $activeService !== 'preferredNeighbor');
+        $this->disabled = $isDisabled;
+        $this->hidden   = $isHidden;
     }
 
     /**
-     * Resets the neighbor name and address fields, persists the changes,
-     * and releases exclusive access.
+     * Resets neighbor name and address and notifies the parent if needed.
      *
+     * @param bool $notifyParent
      * @return void
      */
-    public function resetFields(): void
+    public function resetFields(bool $notifyParent = true): void
     {
-        $this->preferredNeighborName = '';
-        $this->preferredNeighborAddress = '';
-        $this->persistFieldUpdate('name', '', DhlCodes::SERVICE_OPTION_NEIGHBOR_DELIVERY);
-        $this->persistFieldUpdate('address', '', DhlCodes::SERVICE_OPTION_NEIGHBOR_DELIVERY);
-        $this->emitUp('releaseExclusive', 'preferredNeighbor');
-    }
+        $this->preferredNeighborName = null;
+        $this->preferredNeighborAddress = null;
 
-    /**
-     * Handler for when the preferredNeighborName property is updated.
-     * Persists the value and updates exclusive state.
-     *
-     * @param string $value The new neighbor name.
-     * @return string The persisted neighbor name.
-     */
-    public function updatedPreferredNeighborName(string $value): string
-    {
-        $active = ($value !== '') || ($this->preferredNeighborAddress !== '');
-        $this->persistFieldUpdate('name', $value, DhlCodes::SERVICE_OPTION_NEIGHBOR_DELIVERY);
-        $this->emitUp($active ? 'requestExclusive' : 'releaseExclusive', 'preferredNeighbor');
-        return $value;
-    }
+        $this->persistFieldUpdate('name', '', self::SERVICE_CODE);
+        $this->persistFieldUpdate('address', '', self::SERVICE_CODE);
 
-    /**
-     * Handler for when the preferredNeighborAddress property is updated.
-     * Persists the value and updates exclusive state.
-     *
-     * @param string $value The new neighbor address.
-     * @return string The persisted neighbor address.
-     */
-    public function updatedPreferredNeighborAddress(string $value): string
-    {
-        $active = ($this->preferredNeighborName !== '') || ($value !== '');
-        $this->persistFieldUpdate('address', $value, DhlCodes::SERVICE_OPTION_NEIGHBOR_DELIVERY);
-        $this->emitUp($active ? 'requestExclusive' : 'releaseExclusive', 'preferredNeighbor');
-        return $value;
-    }
-    
-    /**
-     * Checks on page load if another exclusive service is already active in the quote.
-     * If so, this component disables itself immediately without waiting for events.
-     */
-    private function checkForOtherActiveServices(): void
-    {
-        $otherExclusiveServices = [
-            DhlCodes::SERVICE_OPTION_DROPOFF_DELIVERY,
-            DhlCodes::SERVICE_OPTION_NO_NEIGHBOR_DELIVERY,
-        ];
-        
-        foreach ($otherExclusiveServices as $serviceCode) {
-            $selections = $this->loadFromDb($serviceCode);
-            if ($this->selectionsHaveValue($selections)) {
-                $this->disabled = true;
-                return;
-            }
+        if ($notifyParent) {
+            $this->emitUp('releaseExclusive', self::SERVICE_CODE);
         }
+    }
+
+    /**
+     * Handles updates when the neighbor name is changed by the user.
+     *
+     * @param string|null $value
+     * @return string|null The updated name
+     */
+    public function updatedPreferredNeighborName(?string $value): ?string
+    {
+        $this->preferredNeighborName = $value ? trim($value) : null;
+        $active = (
+            ($this->preferredNeighborName !== null && $this->preferredNeighborName !== '') ||
+            ($this->preferredNeighborAddress !== null && $this->preferredNeighborAddress !== '')
+        );
+        $this->persistFieldUpdate('name', (string)$this->preferredNeighborName, self::SERVICE_CODE);
+        $this->emitUp($active ? 'requestExclusive' : 'releaseExclusive', self::SERVICE_CODE);
+
+        return $this->preferredNeighborName;
+    }
+
+    /**
+     * Handles updates when the neighbor address is changed by the user.
+     *
+     * @param string|null $value
+     * @return string|null The updated address
+     */
+    public function updatedPreferredNeighborAddress(?string $value): ?string
+    {
+        $this->preferredNeighborAddress = $value ? trim($value) : null;
+        $active = (
+            ($this->preferredNeighborName !== null && $this->preferredNeighborName !== '') ||
+            ($this->preferredNeighborAddress !== null && $this->preferredNeighborAddress !== '')
+        );
+        $this->persistFieldUpdate('address', (string)$this->preferredNeighborAddress, self::SERVICE_CODE);
+        $this->emitUp($active ? 'requestExclusive' : 'releaseExclusive', self::SERVICE_CODE);
+
+        return $this->preferredNeighborAddress;
     }
 }

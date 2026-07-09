@@ -1,0 +1,36 @@
+<?php
+declare(strict_types=1);
+
+use Dhl\Paket\Model\ShippingSettings\ShippingOption\Codes as DhlCodes;
+use Hyva\ShippingDhlDe\ViewModel\Tooltip;
+
+/** @var \Hyva\ShippingDhlDe\Magewire\DeliveryOptions $magewire */
+$magewire = $block->getData('dhl_delivery_options');
+if (!$magewire instanceof \Hyva\ShippingDhlDe\Magewire\DeliveryOptions) {
+    return;
+}
+$viewModels = $block->getData('dhl_view_models') ?? ($viewModels ?? null);
+if (!$viewModels instanceof \Hyva\Theme\Model\ViewModelRegistry) {
+    return;
+}
+$escaper = $block->getData('dhl_escaper') ?? ($escaper ?? null);
+if (!$escaper instanceof \Magento\Framework\Escaper) {
+    return;
+}
+$tooltip = $viewModels->require(Tooltip::class);
+$code = DhlCodes::SERVICE_OPTION_PARCEL_ANNOUNCEMENT;
+if ($magewire->isOptionHidden($code)) { return; }
+$disabled = $magewire->isOptionDisabled($code);
+$descriptionId = 'parcel-announcement-desc';
+$descriptionText = __('Your e-mail address will be sent to DHL upon enabling, after which DHL will trigger a package announcement for your shipment. The e-mail address will exclusively be used for the announcement of this shipment.');
+?>
+<fieldset class="p-4 bg-white rounded-lg mt-0">
+    <div class="flex items-start mb-2" id="<?= $escaper->escapeHtmlAttr($descriptionId) ?>">
+        <legend class="text-slate-800 text-base font-medium mb-0"><?= $escaper->escapeHtml(__('Parcel Announcement')) ?></legend>
+        <?= $tooltip->render($descriptionText) ?>
+    </div>
+    <label class="inline-flex items-start gap-x-4" for="parcelAnnouncement">
+        <input id="parcelAnnouncement" class="form-checkbox flex-none" type="checkbox" value="1" wire:click="toggleParcelAnnouncement" <?= (bool)$magewire->parcelAnnouncement ? 'checked' : '' ?> <?= $disabled ? 'disabled' : '' ?> aria-describedby="<?= $escaper->escapeHtmlAttr($descriptionId) ?>" />
+        <span class="text-gray-700 hover:cursor-pointer"><?= $escaper->escapeHtml(__('Enable DHL parcel notification')) ?></span>
+    </label>
+</fieldset>

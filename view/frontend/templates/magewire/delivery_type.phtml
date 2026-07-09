@@ -1,0 +1,63 @@
+<?php
+
+declare(strict_types=1);
+
+use Magento\Framework\Escaper;
+use Magento\Framework\View\Element\Template;
+use Hyva\ShippingDhlDe\Magewire\DeliveryType;
+use Hyva\ShippingDhlDe\ViewModel\Tooltip;
+use Hyva\Checkout\ViewModel\Checkout\Formatter as FormatterViewModel;
+
+/** @var Escaper $escaper */
+/** @var Template $block */
+/** @var NoNeighbor $magewire */
+/** @var Tooltip $tooltip */
+$tooltip = $viewModels->require(Tooltip::class);
+/** @var FormatterViewModel $formatterViewModel */
+$formatterViewModel = $viewModels->require(FormatterViewModel::class);
+
+if ($magewire->hidden) {
+    return;
+}
+$feenote = __('Choosing drop-off delivery will adjust shipping costs by $1 including VAT.')->render();
+$feenote = str_replace('$1', $formatterViewModel->currency($magewire->fee), $feenote);
+$feeNoteId = 'no-neighbor-fee-note';
+?>
+
+<div class="flex flex-col gap-2">
+    <label class="font-semibold"></label>
+    <div class="flex items-start mb-2">
+        <legend class="text-slate-800 text-base font-medium mb-0">
+            <?= $escaper->escapeHtml(__('Delivery Type')) ?>
+        </legend>
+        <?= $tooltip->render(__('When choosing drop-off delivery, then your e-mail address will be sent to DHL to notify about the delivery location. The e-mail address will exclusively be used for the announcement of this shipment.')) ?>
+    </div>
+    <div class="flex flex-col gap-1">
+        <label class="flex items-center gap-2">
+            <input
+                type="radio"
+                name="delivery_type"
+                value=""
+                wire:model="selectedType"
+                <?= $magewire->disabled ? 'disabled' : '' ?>
+            />
+            <?= $escaper->escapeHtml(__('Door Delivery')) ?>
+        </label>
+
+        <label class="flex items-center gap-2">
+            <input
+                type="radio"
+                name="delivery_type"
+                value="CDP"
+                wire:model="selectedType"
+                <?= $magewire->disabled ? 'disabled' : '' ?>
+            />
+            <?= $escaper->escapeHtml(__('Drop-off Delivery: nearest shop or locker')) ?>
+        </label>
+    </div>
+    <?php if ($magewire->fee > 0): ?>
+        <small class="text-sm" id="<?= $escaper->escapeHtmlAttr($feeNoteId) ?>">
+            <?= $escaper->escapeHtml($feenote); ?>
+        </small>
+    <?php endif; ?>
+</div>

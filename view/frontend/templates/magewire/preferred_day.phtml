@@ -4,14 +4,15 @@ declare(strict_types=1);
 
 use Magento\Framework\Escaper;
 use Magento\Framework\View\Element\Template;
-use Magento\Framework\Pricing\Helper\Data as CurrencyHelper;
 use Hyva\ShippingDhlDe\Magewire\PreferredDay;
 use Hyva\ShippingDhlDe\ViewModel\Tooltip;
 use Hyva\Checkout\ViewModel\Checkout\Formatter as FormatterViewModel;
+use Hyva\Theme\ViewModel\HyvaCsp;
 
 /** @var Escaper $escaper */
 /** @var Template $block */
 /** @var PreferredDay $magewire */
+/** @var HyvaCsp $hyvaCsp */
 /** @var Tooltip $tooltip */
 $tooltip = $viewModels->require(Tooltip::class);
 /** @var FormatterViewModel $formatterViewModel */
@@ -20,9 +21,12 @@ $formatterViewModel = $viewModels->require(FormatterViewModel::class);
 $feenote = __('This service will incur additional shipping costs of $1 including VAT.')->render();
 $feenote = str_replace('$1', $formatterViewModel->currency($magewire->fee), $feenote);
 $feeNoteId = 'preferred-day-fee-note';
+$inputId = 'preferred_day';
+$hasAvailableDays = $magewire->availableDays !== [];
+$selectedPreferredDay = trim((string) ($magewire->preferredDay ?? ''));
 ?>
 
-<fieldset class="p-4 bg-white rounded-lg mt-0">
+<fieldset class="p-4 bg-white rounded-lg mt-0<?= $magewire->hidden ? ' hidden' : '' ?>">
     <div class="flex flex-row items-start">
         <legend class="text-slate-800 text-base font-medium mb-0">
             <?= $escaper->escapeHtml(__('Delivery Day: Delivery on your preferred day')) ?>
@@ -31,9 +35,73 @@ $feeNoteId = 'preferred-day-fee-note';
     </div>
 
     <?php if ($magewire->fee > 0): ?>
-        <p class="form-hint-text mt-2 text-sm text-slate-500 w-full" id="<?= $escaper->escapeHtmlAttr($feeNoteId) ?>">
+        <p class="text-sm" id="<?= $escaper->escapeHtmlAttr($feeNoteId) ?>">
             <?= $escaper->escapeHtml($feenote); ?>
         </p>
     <?php endif; ?>
 
+    <div class="mt-3">
+        <label for="<?= $escaper->escapeHtmlAttr($inputId) ?>" class="sr-only">
+            <?= $escaper->escapeHtml(__('Delivery Day')) ?>
+        </label>
+        <select id="<?= $escaper->escapeHtmlAttr($inputId) ?>"
+                name="preferred_day"
+                class="block w-full form-select grow renderer-select<?= ($magewire->disabled || !$hasAvailableDays) ? ' opacity-50 pointer-events-none' : '' ?>"
+                data-dhl-preferred-day-select
+                data-magewire-target="checkout.shipping.method.dhlpaket_bestway_preferred_day"
+                <?= ($magewire->disabled || !$hasAvailableDays) ? 'disabled' : '' ?>
+                <?= $magewire->fee > 0 ? 'aria-describedby="' . $escaper->escapeHtmlAttr($feeNoteId) . '"' : '' ?>>
+            <option value=""<?= $selectedPreferredDay === '' ? ' selected' : '' ?>>
+                <?= $escaper->escapeHtml(__('Please select a delivery day')) ?>
+            </option>
+            <?php foreach ($magewire->availableDays as $availableDay): ?>
+                <?php
+                $availableDayValue = trim((string) ($availableDay['value'] ?? ''));
+                $availableDayLabel = (string) ($availableDay['label'] ?? $availableDayValue);
+                ?>
+                <option value="<?= $escaper->escapeHtmlAttr($availableDayValue) ?>"
+                    <?= $selectedPreferredDay !== '' && $selectedPreferredDay === $availableDayValue ? ' selected' : '' ?>>
+                    <?= $escaper->escapeHtml($availableDayLabel) ?>
+                </option>
+            <?php endforeach; ?>
+        </select>
+        <?php if (!$hasAvailableDays): ?>
+            <p class="mt-2 text-sm text-slate-600">
+                <?= $escaper->escapeHtml(__('No delivery days are currently available for this address.')) ?>
+            </p>
+        <?php endif; ?>
+        <?php if ($selectedPreferredDay !== ''): ?>
+            <button type="button"
+                    class="btn btn-secondary mt-3"
+                    wire:click="clearValue">
+                <?= $escaper->escapeHtml(__('Remove delivery day')) ?>
+            </button>
+        <?php endif; ?>
+    </div>
 </fieldset>
+
+<script>
+    if (!window.dhlPreferredDaySelectDelegationBound) {
+        window.dhlPreferredDaySelectDelegationBound = true;
+
+        document.addEventListener('change', function (event) {
+            const target = event.target instanceof Element ? event.target : null;
+            if (!target || !window.Magewire) {
+                return;
+            }
+
+            const select = target.closest('[data-dhl-preferred-day-select]');
+            if (!select) {
+                return;
+            }
+
+            const magewireTarget = select.dataset.magewireTarget || '';
+            if (!magewireTarget) {
+                return;
+            }
+
+            Magewire.emitTo(magewireTarget, 'preferredDaySelected', select.value || '');
+        });
+    }
+</script>
+<?php $hyvaCsp->registerInlineScript() ?>

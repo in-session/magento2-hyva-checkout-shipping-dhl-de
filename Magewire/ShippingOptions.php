@@ -4,241 +4,113 @@ declare(strict_types=1);
 namespace Hyva\ShippingDhlDe\Magewire;
 
 use Dhl\Paket\Model\Config\ModuleConfig;
+use Hyva\ShippingDhlDe\Model\Checkout\DhlOptionAvailabilityResolver;
+use Hyva\ShippingDhlDe\Model\Checkout\DhlOptionSelectionCleaner;
+use Hyva\ShippingDhlDe\Model\Checkout\DhlOptionSelectionManager;
+use Hyva\ShippingDhlDe\Model\Checkout\DhlShippingContextResolver;
 use Magento\Checkout\Model\Session as CheckoutSession;
 use Magento\Framework\App\Config\ScopeConfigInterface;
-use Magento\Framework\Exception\NoSuchEntityException;
 use Magento\Store\Model\StoreManagerInterface;
 use Magewirephp\Magewire\Component;
 use Netresearch\ShippingCore\Api\Data\ShippingSettings\ShippingOption\Selection\SelectionInterface;
-use Netresearch\ShippingCore\Api\ShippingSettings\CheckoutManagementInterface;
-use Netresearch\ShippingCore\Model\ShippingSettings\ShippingOption\Selection\QuoteSelectionFactory;
 use Netresearch\ShippingCore\Model\ShippingSettings\ShippingOption\Selection\QuoteSelectionManager;
-use Netresearch\ShippingCore\Model\ShippingSettings\ShippingOption\Selection\QuoteSelection;
 use Netresearch\ShippingCore\Api\Data\ShippingSettings\ShippingOptionInterface;
 use Netresearch\ShippingCore\Model\ShippingSettings\ShippingOption\Selection\QuoteSelectionRepository;
-use Netresearch\ShippingCore\Model\Config\MapBoxConfig;
-use Magento\Framework\Exception\LocalizedException;
 
 /**
- * Abstract base component for DHL Magewire shipping options.
- * Provides shared persistence and utility methods for all option components.
+ * Abstract base class for Magewire DHL shipping option components.
+ * Provides helper methods and dependency injection for all DHL shipping option Magewire components.
  */
 abstract class ShippingOptions extends Component
 {
+    /** @var ModuleConfig */
     protected ModuleConfig $moduleConfig;
+
+    /** @var StoreManagerInterface */
     protected StoreManagerInterface $storeManager;
-    protected QuoteSelectionFactory $quoteSelectionFactory;
-    protected CheckoutManagementInterface $checkoutManagement;
+
+    /** @var QuoteSelectionManager */
     protected QuoteSelectionManager $quoteSelectionManager;
+
+    /** @var ShippingOptionInterface */
     protected ShippingOptionInterface $shippingOption;
+
+    /** @var CheckoutSession */
     protected CheckoutSession $checkoutSession;
+
+    /** @var ScopeConfigInterface */
     protected ScopeConfigInterface $scopeConfig;
+
+    /** @var QuoteSelectionRepository */
     protected QuoteSelectionRepository $quoteSelectionRepository;
-    protected MapBoxConfig $mapBoxConfig;
+
+    /** @var DhlShippingContextResolver */
+    protected DhlShippingContextResolver $dhlShippingContextResolver;
+
+    /** @var DhlOptionSelectionManager */
+    protected DhlOptionSelectionManager $dhlOptionSelectionManager;
+
+    /** @var DhlOptionAvailabilityResolver */
+    protected DhlOptionAvailabilityResolver $dhlOptionAvailabilityResolver;
+
+    /** @var DhlOptionSelectionCleaner */
+    protected DhlOptionSelectionCleaner $dhlOptionSelectionCleaner;
 
     /**
-     * Holds the show/hide (active/inactive) state for all dynamic service options.
-     * This is filled by the child class using the $services array keys.
-     * @var array<string, bool>
-     */
-    public array $optionStates = [];
-
-    /**
-     * ShippingOptions constructor.
-     * Fills $optionStates dynamically based on child class's $services config array.
+     * Dependency injection for all required services.
      */
     public function __construct(
         ModuleConfig $moduleConfig,
         StoreManagerInterface $storeManager,
-        CheckoutManagementInterface $checkoutManagement,
-        QuoteSelectionFactory $quoteSelectionFactory,
         QuoteSelectionManager $quoteSelectionManager,
         ShippingOptionInterface $shippingOption,
         CheckoutSession $checkoutSession,
         ScopeConfigInterface $scopeConfig,
         QuoteSelectionRepository $quoteSelectionRepository,
-        MapBoxConfig $mapBoxConfig
+        DhlShippingContextResolver $dhlShippingContextResolver,
+        DhlOptionSelectionManager $dhlOptionSelectionManager,
+        DhlOptionAvailabilityResolver $dhlOptionAvailabilityResolver,
+        DhlOptionSelectionCleaner $dhlOptionSelectionCleaner
     ) {
         $this->moduleConfig = $moduleConfig;
         $this->storeManager = $storeManager;
-        $this->checkoutManagement = $checkoutManagement;
-        $this->quoteSelectionFactory = $quoteSelectionFactory;
         $this->quoteSelectionManager = $quoteSelectionManager;
         $this->shippingOption = $shippingOption;
         $this->checkoutSession = $checkoutSession;
         $this->scopeConfig = $scopeConfig;
         $this->quoteSelectionRepository = $quoteSelectionRepository;
-        $this->mapBoxConfig = $mapBoxConfig;
-
-        $this->initOptionStates();
+        $this->dhlShippingContextResolver = $dhlShippingContextResolver;
+        $this->dhlOptionSelectionManager = $dhlOptionSelectionManager;
+        $this->dhlOptionAvailabilityResolver = $dhlOptionAvailabilityResolver;
+        $this->dhlOptionSelectionCleaner = $dhlOptionSelectionCleaner;
     }
 
     /**
-     * Dynamically fills $optionStates using keys from $services config in child class.
-     * Every option starts as TRUE (visible/active).
-     */
-    protected function initOptionStates(): void
-    {
-        // Only initialize if the child class defines $services
-        if (property_exists($this, 'services') && is_array($this->services)) {
-            $this->optionStates = array_fill_keys(array_keys($this->services), true);
-        }
-    }
-
-    /**
-     * Load all persisted quote selections for a given DHL shipping option code.
-     * @param string $code
-     * @return SelectionInterface[]
+     * Loads all quote selections for a given service code (e.g., "neighbor", "preferred location", etc.).
+     *
+     * @param string $code The shipping option code.
+     * @return array<string, SelectionInterface>
      */
     protected function loadFromDb(string $code): array
     {
-        $result = [];
-        $quoteSelections = $this->getExistingQuoteSelections();
-
-        foreach ($quoteSelections as $quoteSelection) {
-            if ($quoteSelection->getShippingOptionCode() === $code) {
-                $result[$quoteSelection->getInputCode()] = $quoteSelection;
-            }
-        }
-        return $result;
+        return $this->dhlOptionSelectionManager->loadByOptionCode($code);
     }
 
     /**
-     * Get the current quote from the checkout session.
-     * @return \Magento\Quote\Api\Data\CartInterface|null
-     */
-    protected function getQuote(): ?\Magento\Quote\Api\Data\CartInterface
-    {
-        try {
-            return $this->checkoutSession->getQuote();
-        } catch (NoSuchEntityException $e) {
-            $this->dispatchErrorMessage($e->getMessage());
-            return null;
-        }
-    }
-
-    /**
-     * Get the shipping address from the current quote.
-     * @return \Magento\Quote\Model\Quote\Address|null
-     */
-    protected function getShippingAddress(): ?\Magento\Quote\Model\Quote\Address
-    {
-        $quote = $this->getQuote();
-        if (!$quote) {
-            return null;
-        }
-
-        $address = $quote->getShippingAddress();
-        if (!$address || !$address->getId()) {
-            $this->dispatchErrorMessage(__('Shipping address not found'));
-            return null;
-        }
-
-        return $address;
-    }
-
-    /**
-     * Get the ID of the shipping address.
-     * @return int|null
-     */
-    protected function getAddressId(): ?int
-    {
-        $address = $this->getShippingAddress();
-        return $address ? (int)$address->getId() : null;
-    }
-
-    /**
-     * Get the Mapbox API token (for Packstation map).
-     * @return string
-     */
-    public function getMapboxApiToken(): string
-    {
-        return $this->mapBoxConfig->getApiToken();
-    }
-
-    /**
-     * Load all persisted quote selections for the current shipping address.
-     * @return SelectionInterface[]
-     */
-    protected function getExistingQuoteSelections(): array
-    {
-        $addressId = $this->getAddressId();
-
-        if ($addressId === null) {
-            return [];
-        }
-
-        return $this->quoteSelectionManager->load($addressId);
-    }
-
-    /**
-     * Update (save) a shipping option selection to the current quote.
-     * @param QuoteSelection $quoteSelection
-     * @return array
-     */
-    protected function updateShippingOptionSelections(QuoteSelection $quoteSelection): array
-    {
-        $quoteId = (int) $this->checkoutSession->getQuote()->getId();
-        $quoteSelections = $this->getExistingQuoteSelections();
-
-        // Remove old entry for this code/input if present
-        foreach ($quoteSelections as $key => $selection) {
-            if (
-                $selection->getShippingOptionCode() === $quoteSelection->getShippingOptionCode() &&
-                $selection->getInputCode() === $quoteSelection->getInputCode()
-            ) {
-                unset($quoteSelections[$key]);
-                break;
-            }
-        }
-
-        // Only save if value is not empty
-        if (!empty($quoteSelection->getInputValue())) {
-            $quoteSelections[] = $quoteSelection;
-        }
-
-        $this->checkoutManagement->updateShippingOptionSelections($quoteId, $quoteSelections);
-        return $quoteSelections;
-    }
-
-    /**
-     * Helper to persist a single field/value to quote.
-     * @param string $field
-     * @param mixed $value
-     * @param string $shippingOptionCode
-     * @return mixed
+     * Persists a value for a specific field (input) and shipping option.
+     *
+     * @param string $field The input field name.
+     * @param mixed $value The value to persist.
+     * @param string $shippingOptionCode The shipping option code.
+     * @return mixed The value that was stored.
      */
     protected function persistFieldUpdate(string $field, mixed $value, string $shippingOptionCode): mixed
     {
-        /** @var SelectionInterface $quoteSelection */
-        $quoteSelection = $this->quoteSelectionFactory->create();
-        $quoteSelection->setData([
-            SelectionInterface::SHIPPING_OPTION_CODE => $shippingOptionCode,
-            SelectionInterface::INPUT_CODE => $field,
-            SelectionInterface::INPUT_VALUE => $value
-        ]);
-
-        $this->updateShippingOptionSelections($quoteSelection);
-        return $value;
+        return $this->dhlOptionSelectionManager->saveInput($shippingOptionCode, $field, $value);
     }
 
     /**
-     * Optionally allow dynamic show/hide of options by key (activated by child components).
-     * @param string $key
-     */
-    public function activateOption(string $key): void
-    {
-        foreach ($this->optionStates as $k => $_) {
-            $this->optionStates[$k] = ($k === $key);
-        }
-
-        foreach ($this->optionStates as $k => $isActive) {
-            $this->emitTo('checkout.shipping.method.dhlpaket_bestway_' . $k, 'setShowState', $isActive);
-        }
-    }
-    
-    /**
-     * Checks if any selection input has a non-empty value.
+     * Returns true if any of the given selections has a valid (non-empty) value.
      *
      * @param array|null $selections
      * @return bool
@@ -248,13 +120,26 @@ abstract class ShippingOptions extends Component
         if (empty($selections)) {
             return false;
         }
-
         foreach ($selections as $selection) {
-            if ($selection->getInputValue() !== null && $selection->getInputValue() !== '') {
+            if (
+                $selection instanceof SelectionInterface &&
+                $selection->getInputValue() !== null &&
+                $selection->getInputValue() !== ''
+            ) {
                 return true;
             }
         }
-
         return false;
     }
+
+    /**
+     * Returns the ID of the current shipping address, or null if unavailable.
+     *
+     * @return int|null
+     */
+    protected function getAddressId(): ?int
+    {
+        return $this->dhlOptionSelectionManager->getAddressId();
+    }
+
 }

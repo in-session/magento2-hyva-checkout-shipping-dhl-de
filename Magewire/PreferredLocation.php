@@ -8,115 +8,91 @@ use Netresearch\ShippingCore\Api\Data\ShippingSettings\ShippingOption\Selection\
 
 /**
  * Magewire component for managing the DHL "Preferred Location" (Drop-off Delivery) option.
- *
- * Handles enabling/disabling the option, exclusive service state, and persisting the location value.
  */
 class PreferredLocation extends ShippingOptions
 {
-    /**
-     * The customer-selected preferred drop-off location (or empty string if unset).
-     *
-     * @var string
-     */
-    public string $preferredLocation = '';
+    /** @var string Constant for the service code */
+    public const SERVICE_CODE = DhlCodes::SERVICE_OPTION_DROPOFF_DELIVERY;
 
-    /**
-     * Whether the preferred location option is currently disabled (because another exclusive service is active).
-     *
-     * @var bool
-     */
+    public const MAX_LENGTH = 40;
+
+    /** @var string|null User's entered preferred location or null */
+    public ?string $preferredLocation = null;
+
+    /** @var bool Whether the option is disabled */
     public bool $disabled = false;
 
-    /**
-     * Event listeners for this component.
-     *
-     * @var array<string, string>
-     */
-    protected $listeners = [
-        'activeServiceChanged' => 'onActiveServiceChanged',
-    ];
+    /** @var bool Whether the option is hidden */
+    public bool $hidden = false;
+
+    /** @var array Magewire event listeners */
+    protected $listeners = ['updateState' => 'onUpdateState'];
 
     /**
-     * Lifecycle method called on component mount.
-     * Loads the current preferred location value and requests exclusivity if set.
+     * Magewire lifecycle hook.
+     * Loads the preferred location from the database on mount.
      *
      * @return void
      */
     public function mount(): void
     {
         /** @var SelectionInterface[] $quoteSelections */
-        $quoteSelections = $this->loadFromDb(DhlCodes::SERVICE_OPTION_DROPOFF_DELIVERY);
+        $quoteSelections = $this->loadFromDb(self::SERVICE_CODE);
 
         if ($quoteSelections && isset($quoteSelections['details'])) {
-            $this->preferredLocation = (string)$quoteSelections['details']->getInputValue();
-            if ($this->preferredLocation !== '') {
-                // Request exclusive activation for this service.
-                $this->emitUp('requestExclusive', 'preferredLocation');
-            }
-        }
-        
-        if ($this->preferredLocation === '') {
-            $this->checkForOtherActiveServices();
+            $value = trim((string)$quoteSelections['details']->getInputValue());
+            $this->preferredLocation = $value !== '' ? mb_substr($value, 0, self::MAX_LENGTH) : null;
         }
     }
 
     /**
-     * Handles changes to the active exclusive service.
-     * Disables this option and clears its value if another exclusive service becomes active.
+     * Handles state updates from the parent component.
+     * If hidden while set, resets the value. Updates disabled/hidden state.
      *
-     * @param string|null $activeService The currently active exclusive service, or null.
+     * @param array $activeServiceCodes
+     * @param bool $isDisabled
+     * @param bool $isHidden
      * @return void
      */
-    public function onActiveServiceChanged(?string $activeService = null): void
+    public function onUpdateState(array $activeServiceCodes, bool $isDisabled, bool $isHidden): void
     {
-        if ($activeService !== 'preferredLocation' && $this->preferredLocation !== '') {
+        if (($isHidden || $isDisabled) && trim((string)$this->preferredLocation) !== '') {
             $this->clearValue();
         }
-        $this->disabled = ($activeService !== null && $activeService !== 'preferredLocation');
+        $this->disabled = $isDisabled;
+        $this->hidden   = $isHidden;
     }
 
     /**
-     * Clears the preferred location value and releases exclusive access.
+     * Clears the preferred location value and notifies the parent.
      *
      * @return void
      */
     public function clearValue(): void
     {
-        $this->preferredLocation = '';
-        $this->persistFieldUpdate('details', '', DhlCodes::SERVICE_OPTION_DROPOFF_DELIVERY);
-        $this->emitUp('releaseExclusive', 'preferredLocation');
+        $this->preferredLocation = null;
+        $this->persistFieldUpdate('details', '', self::SERVICE_CODE);
+        $this->emitUp('releaseExclusive', self::SERVICE_CODE);
     }
 
     /**
-     * Handler for when the preferredLocation property is updated.
-     * Persists the new value and updates exclusive state.
+     * Handles updates when the preferred location field changes.
      *
-     * @param string $value The new preferred location value.
-     * @return mixed Result of the field persistence operation.
+     * @param string|null $value
+     * @return string|null The updated value
      */
-    public function updatedPreferredLocation(string $value): mixed
+    public function updatedPreferredLocation(?string $value): ?string
     {
-        $res = $this->persistFieldUpdate('details', $value, DhlCodes::SERVICE_OPTION_DROPOFF_DELIVERY);
-        $this->emitUp($value !== '' ? 'requestExclusive' : 'releaseExclusive', 'preferredLocation');
-        return $res;
-    }
-    
-    /**
-     * Checks on page load if another exclusive service is already active in the quote.
-     * If so, this component disables itself immediately without waiting for events.
-     */
-    private function checkForOtherActiveServices(): void
-    {
-        $otherExclusiveServices = [
-            DhlCodes::SERVICE_OPTION_NEIGHBOR_DELIVERY,
-        ];
+        $this->preferredLocation = $value ? mb_substr(trim($value), 0, self::MAX_LENGTH) : null;
 
-        foreach ($otherExclusiveServices as $serviceCode) {
-            $selections = $this->loadFromDb($serviceCode);
-            if ($this->selectionsHaveValue($selections)) {
-                $this->disabled = true;
-                return;
-            }
-        }
+        $this->persistFieldUpdate('details', (string)$this->preferredLocation, self::SERVICE_CODE);
+        $this->emitUp(
+            $this->preferredLocation !== null && $this->preferredLocation !== ''
+                ? 'requestExclusive'
+                : 'releaseExclusive',
+            self::SERVICE_CODE
+        );
+
+        return $this->preferredLocation;
     }
 }

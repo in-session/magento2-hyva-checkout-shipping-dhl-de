@@ -17,7 +17,7 @@ $descriptionId = 'preferred-neighbor-desc';
 $descriptionText = __('Declare a person in your immediate neighborhood whom we can hand out your parcel. This person should live in the same building, directly opposite or next door.');
 ?>
 
-<fieldset class="p-4 bg-white rounded-lg mt-0">    
+<fieldset class="p-4 bg-white rounded-lg mt-0<?= $magewire->hidden ? ' hidden' : '' ?>">
     <div class="flex flex-row items-start" id="<?= $escaper->escapeHtmlAttr($descriptionId) ?>">
         <legend class="text-slate-800 text-base font-medium mb-0">
             <?= $escaper->escapeHtml(__('Preferred Neighbor: Delivery to a neighbor of your choice')) ?>
@@ -36,7 +36,7 @@ $descriptionText = __('Declare a person in your immediate neighborhood whom we c
                    type="text"
                    id="preferred_neighbor_name"
                    class="block w-full form-input grow renderer-text<?= $magewire->disabled ? ' opacity-50 pointer-events-none' : '' ?>"
-                   <?= $magewire->disabled ? 'disabled' : '' ?>
+                   <?= $magewire->disabled  ? 'disabled' : '' ?>
                    placeholder="<?= $escaper->escapeHtmlAttr(__('First name, last name of neighbor'))?>"
                    />
         </div>
@@ -50,9 +50,19 @@ $descriptionText = __('Declare a person in your immediate neighborhood whom we c
                    id="preferred_neighbor_address"
                    class="block w-full form-input grow renderer-text<?= $magewire->disabled ? ' opacity-50 pointer-events-none' : '' ?>"
                    type="text"
-                   <?= $magewire->disabled ? 'disabled' : '' ?>
+                   <?= $magewire->disabled  ? 'disabled' : '' ?>
                    placeholder="<?= $escaper->escapeHtmlAttr(__('Street, number, postal code, city'))?>"
                    />
         </div>
+        <?php if (
+            trim((string) $magewire->preferredNeighborName) !== ''
+            || trim((string) $magewire->preferredNeighborAddress) !== ''
+        ): ?>
+            <button type="button"
+                    class="btn btn-secondary"
+                    wire:click="resetFields">
+                <?= $escaper->escapeHtml(__('Remove preferred neighbor')) ?>
+            </button>
+        <?php endif; ?>
     </div>
 </fieldset>
